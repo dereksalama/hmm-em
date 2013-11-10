@@ -1,4 +1,4 @@
-package edu;
+package edu.dartmouth.hmmem;
 
 import java.io.DataInput;
 import java.io.DataOutput;
