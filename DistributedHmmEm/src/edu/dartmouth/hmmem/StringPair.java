@@ -26,4 +26,9 @@ public class StringPair {
         hash = hash * 31 + y.hashCode();
         return hash;
     }
+    
+    @Override
+    public String toString() {
+    	return "( " + x + " , " + y + " )";
+    }
 }
