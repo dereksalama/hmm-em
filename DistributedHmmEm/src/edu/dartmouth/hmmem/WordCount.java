@@ -1,6 +1,8 @@
 package edu.dartmouth.hmmem;
 
 import java.io.BufferedReader;
+import java.io.DataOutput;
+import java.io.DataOutputStream;
 import java.io.IOException;
 import java.io.InputStreamReader;
 import java.net.URI;
@@ -84,6 +86,13 @@ public class WordCount {
 		
 		String initialLogProbMapDir = args[1] + "/0";
 		fs.mkdirs(new Path(initialLogProbMapDir));
+		
+		Path initialEMModelParamsFilePath = new Path(args[1] + "/0/" + EMDriver.EM_MODEL_PARAMS_FILE_NAME);
+		if (!fs.createNewFile(initialEMModelParamsFilePath)) {
+			throw new Exception("File creation failed.");
+		}
+		DataOutput out = new DataOutputStream(fs.open(initialEMModelParamsFilePath))
+		
 //		EMDriver.outputTransLogProbMap(initialLogProbMapDir);
 //		EMDriver.outputEmisLogProbMap(initialLogProbMapDir);
 		

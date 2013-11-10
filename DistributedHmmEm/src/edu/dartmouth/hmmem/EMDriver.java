@@ -7,6 +7,8 @@ import java.util.Map;
 import java.util.Random;
 
 public class EMDriver {
+	
+	public static final String EM_MODEL_PARAMS_FILE_NAME = "em_model_params.txt";
 
 	/**
 	 * Parses the given pair file, where each line is of the form
