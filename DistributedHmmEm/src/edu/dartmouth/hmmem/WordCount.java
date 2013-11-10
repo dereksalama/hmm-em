@@ -1,13 +1,17 @@
 package edu.dartmouth.hmmem;
 
+import java.io.BufferedReader;
 import java.io.IOException;
+import java.io.InputStreamReader;
 import java.util.Iterator;
 import java.util.StringTokenizer;
 import java.util.logging.Level;
 import java.util.logging.Logger;
 
+import org.apache.hadoop.conf.Configuration;
+import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.Path;
-import org.apache.hadoop.io.FloatWritable;
+import org.apache.hadoop.io.DoubleWritable;
 import org.apache.hadoop.io.LongWritable;
 import org.apache.hadoop.io.Text;
 import org.apache.hadoop.mapred.FileInputFormat;
@@ -47,22 +51,28 @@ public class WordCount {
 		}
 	}
 
-	public static class Reduce extends MapReduceBase implements Reducer<Text, EMModelParameter, Text, FloatWritable> {
-		public void reduce(Text key, Iterator<EMModelParameter> values, OutputCollector<Text, FloatWritable> output, Reporter reporter) throws IOException {
+	public static class Reduce extends MapReduceBase implements Reducer<Text, EMModelParameter, Text, DoubleWritable> {
+		public void reduce(Text key, Iterator<EMModelParameter> values, OutputCollector<Text, DoubleWritable> output, Reporter reporter) throws IOException {
 			while (values.hasNext()) {
 				EMModelParameter modelParam = values.next();
 				
 				if (modelParam.getParameterType() == EMModelParameter.PARAMETER_TYPE_TRANSITION) {
-					output.collect(key, new FloatWritable(1337));
+					output.collect(key, new DoubleWritable(1337));
 				} else {
-					output.collect(key, new FloatWritable(modelParam.getLogCount()));
+					output.collect(key, new DoubleWritable(modelParam.getLogCount()));
 				}
 			}
 		}
 	}
 
 	public static void main(String[] args) throws Exception {		
-		runIteration("WordCount iter", args[0], args[1], 5);
+//		runIteration("WordCount iter", args[0], args[1], 5);
+		
+//		Path transFilePath = new Path(transFilePathStr);
+//		FileSystem fs = FileSystem.get(new Configuration());
+//		BufferedReader reader = new BufferedReader(new InputStreamReader(fs.open(transFilePath)));
+		
+//		System.out.println(EMDriver.parseTransitionFile("/Users/jakeleichtling/Documents/comp_ling_workspace/test_trans_file.txt"));
 	}
 
 	private static boolean runIteration(String jobName, String inputFilePath, String outputFilePath, int iteration) {
@@ -78,7 +88,7 @@ public class WordCount {
 		conf.setMapOutputKeyClass(Text.class);
 		conf.setMapOutputValueClass(EMModelParameter.class);
 		conf.setOutputKeyClass(Text.class);
-		conf.setOutputValueClass(FloatWritable.class);
+		conf.setOutputValueClass(DoubleWritable.class);
 		
 		FileInputFormat.setInputPaths(conf, new Path(inputFilePath));
 		FileOutputFormat.setOutputPath(conf, new Path(outputFilePath + "-" + iteration));

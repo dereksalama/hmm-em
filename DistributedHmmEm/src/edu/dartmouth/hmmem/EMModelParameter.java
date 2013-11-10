@@ -23,11 +23,11 @@ public class EMModelParameter implements Writable {
 	private Text transFromStateOrEmisState = new Text();
 	private Text transToStateOrEmisToken = new Text();
 	
-	private float logCount = 0;
+	private double logCount = 0;
 	
 	public EMModelParameter() {}
 
-	public EMModelParameter(char parameterType, Text transFromStateOrEmisState, Text transToStateOrEmisToken, float logCount) {
+	public EMModelParameter(char parameterType, Text transFromStateOrEmisState, Text transToStateOrEmisToken, double logCount) {
 		this.parameterType = parameterType;
 		this.transFromStateOrEmisState = transFromStateOrEmisState;
 		this.transToStateOrEmisToken = transToStateOrEmisToken;
@@ -41,7 +41,7 @@ public class EMModelParameter implements Writable {
 		transFromStateOrEmisState.readFields(in);
 		transToStateOrEmisToken.readFields(in);
 		
-		logCount = in.readFloat();
+		logCount = in.readDouble();
 	}
 
 	@Override
@@ -51,7 +51,7 @@ public class EMModelParameter implements Writable {
 		transFromStateOrEmisState.write(out);
 		transToStateOrEmisToken.write(out);
 		
-		out.writeFloat(logCount);		
+		out.writeDouble(logCount);		
 	}
 
 	public char getParameterType() {
@@ -78,11 +78,11 @@ public class EMModelParameter implements Writable {
 		this.transToStateOrEmisToken = transToStateOrEmisToken;
 	}
 
-	public float getLogCount() {
+	public double getLogCount() {
 		return logCount;
 	}
 
-	public void setLogCount(float logCount) {
+	public void setLogCount(double logCount) {
 		this.logCount = logCount;
 	}
 }
