@@ -6,8 +6,8 @@ public class StringPair {
 	public final String y;
 	
 	public StringPair(String x, String y) {
-		this.x = x;
-		this.y = y;
+		this.x = new String(x);
+		this.y = new String(y);
 	}
 	
 	@Override
