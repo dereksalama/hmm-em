@@ -7,3 +7,5 @@
 
 # Eclipse
 .metadata
+
+*.classpath
