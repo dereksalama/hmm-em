@@ -1,8 +1,12 @@
 package edu.dartmouth.hmmem;
 
 import java.io.BufferedReader;
+import java.io.DataOutput;
+import java.io.DataOutputStream;
 import java.io.IOException;
 import java.io.InputStreamReader;
+import java.net.URI;
+import java.util.HashMap;
 import java.util.Iterator;
 import java.util.StringTokenizer;
 import java.util.logging.Level;
@@ -66,11 +70,45 @@ public class WordCount {
 	}
 
 	public static void main(String[] args) throws Exception {		
-//		runIteration("WordCount iter", args[0], args[1], 5);
+		Path transFilePath = new Path(args[2]);
+		Path emisFilePath = new Path(args[3]);
 		
-//		Path transFilePath = new Path(transFilePathStr);
-//		FileSystem fs = FileSystem.get(new Configuration());
-//		BufferedReader reader = new BufferedReader(new InputStreamReader(fs.open(transFilePath)));
+		FileSystem fs = FileSystem.get(new URI("s3://wordcount-tutorial"), new Configuration());
+		
+		BufferedReader transFileReader = new BufferedReader(new InputStreamReader(fs.open(transFilePath)));
+		BufferedReader emisFileReader = new BufferedReader(new InputStreamReader(fs.open(emisFilePath)));
+		
+		HashMap<StringPair, Double> transLogProbMap = (HashMap<StringPair, Double>) EMDriver.parsePairFile(transFileReader);
+		HashMap<StringPair, Double> emisLogProbMap = (HashMap<StringPair, Double>) EMDriver.parsePairFile(emisFileReader);
+		
+		transFileReader.close();
+		emisFileReader.close();
+		
+		String initialLogProbMapDir = args[1] + "/0";
+		fs.mkdirs(new Path(initialLogProbMapDir));
+		
+		Path initialEMModelParamsFilePath = new Path(args[1] + "/0/" + EMDriver.EM_MODEL_PARAMS_FILE_NAME);
+		if (!fs.createNewFile(initialEMModelParamsFilePath)) {
+			throw new Exception("File creation failed.");
+		}
+		DataOutput out = new DataOutputStream(fs.open(initialEMModelParamsFilePath))
+		
+//		EMDriver.outputTransLogProbMap(initialLogProbMapDir);
+//		EMDriver.outputEmisLogProbMap(initialLogProbMapDir);
+		
+		fs.close();
+		
+		System.err.println("Trans file: " + args[2]);
+		for (StringPair stringPair : transLogProbMap.keySet()) {
+			System.err.println(stringPair + ": " + transLogProbMap.get(stringPair));
+		}
+		
+		System.err.println("\nEmis file: " + args[3]);
+		for (StringPair stringPair : emisLogProbMap.keySet()) {
+			System.err.print(stringPair + ": " + emisLogProbMap.get(stringPair));
+		}
+		
+		runIteration("WordCount iter", args[0], args[1], 5);
 		
 //		System.out.println(EMDriver.parseTransitionFile("/Users/jakeleichtling/Documents/comp_ling_workspace/test_trans_file.txt"));
 	}

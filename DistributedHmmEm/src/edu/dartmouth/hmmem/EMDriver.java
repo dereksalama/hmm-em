@@ -1,70 +1,30 @@
 package edu.dartmouth.hmmem;
 
 import java.io.BufferedReader;
+import java.io.BufferedWriter;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.Random;
 
 public class EMDriver {
-
-	/**
-	 * Parses the given transition file, where each line is of the form
-	 * "<from_state> <to_state>". Assigns a random probability to each transition
-	 * and normalizes such that the sum of all transitions from a given from_state
-	 * is 1.0. Returns a dictionary mapping the from_state to_state tuple to the log
-	 * of the randomized and normalized probability.
-	 */
-	public static Map<StringPair, Double> parseTransitionFile(BufferedReader transFileReader) throws Exception {
-		Random random = new Random();
-		Map<StringPair, Double> transLogProbMap = new HashMap<StringPair, Double>();
-		
-		String line;
-		int i = 0;
-		while (null != (line = transFileReader.readLine())) {
-			i++;
-			
-			// Skip blank lines.
-			if (line.length() == 0) {
-				continue;
-			}
-			
-			String[] tokens = line.trim().split("\\s+");
-			if (tokens.length != 2) {
-				throw new Exception("Line " + i + " does not have exactly 2 tokens.");
-			}
-			
-			String fromState = tokens[0];
-			String toState = tokens[1];
-
-			StringPair stringPair = new StringPair(fromState, toState);
-			double logProb = random.nextDouble();
-
-			if (transLogProbMap.containsKey(stringPair)) {
-				throw new Exception("Line " + i + " is a duplicate of another line.");
-			}
-			
-			transLogProbMap.put(stringPair, logProb);
-		}
-		
-		normalizeLogProbMap(transLogProbMap);
-		
-		return transLogProbMap;
-	}
 	
+	public static final String EM_MODEL_PARAMS_FILE_NAME = "em_model_params.txt";
+
 	/**
-	 * Parses the given emission file, where each line is of the form
-	 * "<state> <token>". Assigns a random probability to each emission
-	 * and normalizes such that the sum of all emissions from a given state
-	 * is 1.0. Returns a dictionary mapping the (state, token) tuple to the log
+	 * Parses the given pair file, where each line is of the form
+	 * "<from_state> <to_state>" (for transition files) or "<state> <token>" for emission files.
+	 * Assigns a random probability to each transition/emission
+	 * and normalizes such that the sum of all transitions/emissions from a given state
+	 * is 1.0. Returns a dictionary mapping the tuple to the log
 	 * of the randomized and normalized probability.
 	 */
-	public static Map<StringPair, Double> parseEmissionFile(BufferedReader emisFileReader) throws Exception {
+	public static Map<StringPair, Double> parsePairFile(BufferedReader fileReader) throws Exception {
 		Random random = new Random();
-		Map<StringPair, Double> emisLogProbMap = new HashMap<StringPair, Double>();
+		Map<StringPair, Double> logProbMap = new HashMap<StringPair, Double>();
 		
 		String line;
 		int i = 0;
-		while (null != (line = emisFileReader.readLine())) {
+		while (null != (line = fileReader.readLine())) {
 			i++;
 			
 			// Skip blank lines.
@@ -83,16 +43,16 @@ public class EMDriver {
 			StringPair stringPair = new StringPair(fromState, toState);
 			double logProb = random.nextDouble();
 
-			if (emisLogProbMap.containsKey(stringPair)) {
+			if (logProbMap.containsKey(stringPair)) {
 				throw new Exception("Line " + i + " is a duplicate of another line.");
 			}
 			
-			emisLogProbMap.put(stringPair, logProb);
+			logProbMap.put(stringPair, logProb);
 		}
 		
-		normalizeLogProbMap(emisLogProbMap);
+		normalizeLogProbMap(logProbMap);
 		
-		return emisLogProbMap;
+		return logProbMap;
 	}
 	
 	/**
@@ -166,4 +126,14 @@ public class EMDriver {
 		
 		return logSum;
 	}
+	
+	/**
+	 * Outputs the given transition log prob map to the given file writer.
+	 */
+	public static void outputTransLogProbMap(Map<StringPair, Double> transLogProbMap, BufferedWriter fileWriter) {
+		
+	}
+	
+//	EMDriver.outputTransLogProbMap(initialLogProbMapDir);
+//	EMDriver.outputEmisLogProbMap(initialLogProbMapDir);
 }
