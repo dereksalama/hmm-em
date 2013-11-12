@@ -53,6 +53,12 @@ public class EMModelParameter implements Writable {
 		
 		out.writeDouble(logCount);		
 	}
+	
+	public static EMModelParameter read(DataInput in) throws IOException {
+		EMModelParameter param = new EMModelParameter();
+		param.readFields(in);
+		return param;
+	}
 
 	public char getParameterType() {
 		return parameterType;

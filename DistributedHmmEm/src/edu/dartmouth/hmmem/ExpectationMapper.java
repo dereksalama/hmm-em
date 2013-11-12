@@ -1,13 +1,12 @@
 package edu.dartmouth.hmmem;
 
-import java.io.BufferedReader;
 import java.io.IOException;
-import java.io.InputStreamReader;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.Map.Entry;
 
 import org.apache.hadoop.conf.Configuration;
+import org.apache.hadoop.fs.FSDataInputStream;
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.io.LongWritable;
@@ -21,8 +20,7 @@ import org.apache.hadoop.mapred.Reporter;
 public class ExpectationMapper extends MapReduceBase implements
 		Mapper<LongWritable, EMModelParameter, Text, EMModelParameter> {
 	
-	public static final String TRANSITIONS_FILEPATH = "transitions";
-	public static final String EMISSIONS_FILEPATH = "emissions";
+	public static final String PROBABILITIES_FILEPATH = "transitions";
 	
 	private final Map<StringPair, Double> transProbs = new HashMap<StringPair, Double>();
 	private final Map<StringPair, Double> emitProbs = new HashMap<StringPair, Double>();
@@ -38,41 +36,16 @@ public class ExpectationMapper extends MapReduceBase implements
 	
 	@Override
 	public void configure(JobConf job) {
-		Path transitionsFile = new Path(job.get(TRANSITIONS_FILEPATH));
-		Path emissionsFile = new Path(job.get(EMISSIONS_FILEPATH));
+		Path probFile = new Path(job.get(PROBABILITIES_FILEPATH));
 		
-		BufferedReader transBr = null;
-		BufferedReader emitBr = null;
+		FSDataInputStream is = null;
 		FileSystem fs = null;
 		try {
 			fs = FileSystem.get(new Configuration());
-			transBr = new BufferedReader(new InputStreamReader(fs.open(transitionsFile)));
-			populateMap(transBr, transProbs);
+			is = fs.open(probFile);
 			
-			emitBr = new BufferedReader(new InputStreamReader(fs.open(emissionsFile)));
-			populateMap(emitBr, emitProbs);
+			// TODO: figure out how to find end of file
 		} catch (IOException e) {
-			if (transBr != null) {
-				try {
-					transBr.close();
-				} catch (IOException e1) {
-					e1.printStackTrace();
-				}
-			}
-			if (emitBr != null) {
-				try {
-					emitBr.close();
-				} catch (IOException e1) {
-					e1.printStackTrace();
-				}
-			}
-			if (fs != null) {
-				try {
-					fs.close();
-				} catch (IOException e1) {
-					e1.printStackTrace();
-				}
-			}
 			
 			e.printStackTrace();
 		}
@@ -83,21 +56,6 @@ public class ExpectationMapper extends MapReduceBase implements
 		}
 		for (Entry<StringPair, Double> e : emitProbs.entrySet()) {
 			System.out.println(e.getKey() + ": " + e.getValue());
-		}
-	}
-	
-	private void populateMap(BufferedReader br, Map<StringPair, Double> map) throws IOException {
-		String line = br.readLine();
-		while (line != null) {
-			String[] vals = line.split("\\s+"); //split on whitespace
-			if (vals.length != 3) {
-				throw new IOException("Invalid file format");
-			}
-			Double logProb = Double.parseDouble(vals[2]);
-			StringPair param = new StringPair(vals[0], vals[1]);
-			map.put(param, logProb);
-			
-			line = br.readLine();
 		}
 	}
 
