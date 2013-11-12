@@ -2,6 +2,7 @@ package edu.dartmouth.hmmem;
 
 import java.io.DataInput;
 import java.io.DataOutput;
+import java.io.EOFException;
 import java.io.IOException;
 
 import org.apache.hadoop.io.Text;
@@ -56,7 +57,11 @@ public class EMModelParameter implements Writable {
 	
 	public static EMModelParameter read(DataInput in) throws IOException {
 		EMModelParameter param = new EMModelParameter();
-		param.readFields(in);
+		try {
+			param.readFields(in);
+		} catch (EOFException e) { // read to end of file (log?)
+			return null;
+		}
 		return param;
 	}
 
