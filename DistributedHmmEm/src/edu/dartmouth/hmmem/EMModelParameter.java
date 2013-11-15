@@ -59,7 +59,7 @@ public class EMModelParameter implements Writable {
 		EMModelParameter param = new EMModelParameter();
 		try {
 			param.readFields(in);
-		} catch (EOFException e) { // read to end of file (log?)
+		} catch (EOFException e) { // read to end of file
 			return null;
 		}
 		return param;
@@ -95,5 +95,22 @@ public class EMModelParameter implements Writable {
 
 	public void setLogCount(double logCount) {
 		this.logCount = logCount;
+	}
+	
+	public String toString() {
+		StringBuilder sb = new StringBuilder();
+		
+		switch (parameterType) {
+		case PARAMETER_TYPE_TRANSITION:
+			sb.append("Transition: ");
+			break;
+		case PARAMETER_TYPE_EMISSION:
+			sb.append("Emission: ");
+			break;
+		}
+		
+		sb.append(transFromStateOrEmisState + " --> " + transToStateOrEmisToken + " : " + logCount);
+		
+		return sb.toString();
 	}
 }

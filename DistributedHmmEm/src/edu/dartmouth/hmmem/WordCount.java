@@ -1,146 +1,57 @@
 package edu.dartmouth.hmmem;
 
-import java.io.BufferedReader;
-import java.io.DataOutput;
-import java.io.DataOutputStream;
 import java.io.IOException;
-import java.io.InputStreamReader;
-import java.net.URI;
-import java.util.HashMap;
 import java.util.Iterator;
-import java.util.StringTokenizer;
 import java.util.logging.Level;
 import java.util.logging.Logger;
 
-import org.apache.hadoop.conf.Configuration;
-import org.apache.hadoop.fs.FileSystem;
-import org.apache.hadoop.fs.Path;
-import org.apache.hadoop.io.DoubleWritable;
-import org.apache.hadoop.io.LongWritable;
 import org.apache.hadoop.io.Text;
-import org.apache.hadoop.mapred.FileInputFormat;
-import org.apache.hadoop.mapred.FileOutputFormat;
-import org.apache.hadoop.mapred.JobClient;
-import org.apache.hadoop.mapred.JobConf;
 import org.apache.hadoop.mapred.MapReduceBase;
-import org.apache.hadoop.mapred.Mapper;
 import org.apache.hadoop.mapred.OutputCollector;
 import org.apache.hadoop.mapred.Reducer;
 import org.apache.hadoop.mapred.Reporter;
-import org.apache.hadoop.mapred.TextInputFormat;
-import org.apache.hadoop.mapred.TextOutputFormat;
 
 public class WordCount {
 	
-	private static Logger LOGGER = Logger.getLogger("InfoLogging");
+	private static Logger LOGGER = Logger.getLogger(WordCount.class.toString());
 
-	public static class Map extends MapReduceBase implements Mapper<LongWritable, Text, Text, EMModelParameter> {
-		private Text word = new Text();
+//	public static class Map extends MapReduceBase implements Mapper<LongWritable, Text, Text, EMModelParameter> {
+//		private Text word = new Text();
+//
+//		public void map(LongWritable key, Text value, OutputCollector<Text, EMModelParameter> output, Reporter reporter) throws IOException {
+//			String line = value.toString();
+//			StringTokenizer tokenizer = new StringTokenizer(line);
+//			int i = 0;
+//			while (tokenizer.hasMoreTokens()) {
+//				i++;
+//				
+//				word.set(tokenizer.nextToken());
+//				
+//				EMModelParameter transitionParameter = new EMModelParameter(EMModelParameter.PARAMETER_TYPE_TRANSITION, word, word, i);
+//				output.collect(word, transitionParameter);
+//				
+//				EMModelParameter emissionParameter = new EMModelParameter(EMModelParameter.PARAMETER_TYPE_EMISSION, word, word, -1 * i);
+//				output.collect(word, emissionParameter);
+//			}
+//		}
+//	}
 
-		public void map(LongWritable key, Text value, OutputCollector<Text, EMModelParameter> output, Reporter reporter) throws IOException {
-			String line = value.toString();
-			StringTokenizer tokenizer = new StringTokenizer(line);
-			int i = 0;
-			while (tokenizer.hasMoreTokens()) {
-				i++;
-				
-				word.set(tokenizer.nextToken());
-				
-				EMModelParameter transitionParameter = new EMModelParameter(EMModelParameter.PARAMETER_TYPE_TRANSITION, word, word, i);
-				output.collect(word, transitionParameter);
-				
-				EMModelParameter emissionParameter = new EMModelParameter(EMModelParameter.PARAMETER_TYPE_EMISSION, word, word, -1 * i);
-				output.collect(word, emissionParameter);
-			}
-		}
-	}
-
-	public static class Reduce extends MapReduceBase implements Reducer<Text, EMModelParameter, Text, DoubleWritable> {
-		public void reduce(Text key, Iterator<EMModelParameter> values, OutputCollector<Text, DoubleWritable> output, Reporter reporter) throws IOException {
+	public static class Reduce extends MapReduceBase implements Reducer<Text, EMModelParameter, Text, Text> {
+		public void reduce(Text key, Iterator<EMModelParameter> values, OutputCollector<Text, Text> output, Reporter reporter) throws IOException {
+			
+			LOGGER.log(Level.INFO, "Reduce");
+			
+			System.err.println("~~~~~~~~~~~~~Reduce~~~~~~~~~~~~~");
+			
 			while (values.hasNext()) {
 				EMModelParameter modelParam = values.next();
 				
 				if (modelParam.getParameterType() == EMModelParameter.PARAMETER_TYPE_TRANSITION) {
-					output.collect(key, new DoubleWritable(1337));
+					output.collect(key, new Text(modelParam.toString()));
 				} else {
-					output.collect(key, new DoubleWritable(modelParam.getLogCount()));
+					output.collect(key, new Text(modelParam.toString()));
 				}
 			}
 		}
 	}
-
-	public static void main(String[] args) throws Exception {		
-		Path transFilePath = new Path(args[2]);
-		Path emisFilePath = new Path(args[3]);
-		
-		FileSystem fs = FileSystem.get(new URI("s3://wordcount-tutorial"), new Configuration());
-		
-		BufferedReader transFileReader = new BufferedReader(new InputStreamReader(fs.open(transFilePath)));
-		BufferedReader emisFileReader = new BufferedReader(new InputStreamReader(fs.open(emisFilePath)));
-		
-		HashMap<StringPair, Double> transLogProbMap = (HashMap<StringPair, Double>) EMDriver.parsePairFile(transFileReader);
-		HashMap<StringPair, Double> emisLogProbMap = (HashMap<StringPair, Double>) EMDriver.parsePairFile(emisFileReader);
-		
-		transFileReader.close();
-		emisFileReader.close();
-		
-		String initialLogProbMapDir = args[1] + "/0";
-		fs.mkdirs(new Path(initialLogProbMapDir));
-		
-		Path initialEMModelParamsFilePath = new Path(args[1] + "/0/" + EMDriver.EM_MODEL_PARAMS_FILE_NAME);
-		if (!fs.createNewFile(initialEMModelParamsFilePath)) {
-			throw new Exception("File creation failed.");
-		}
-		DataOutput out = new DataOutputStream(fs.open(initialEMModelParamsFilePath))
-		
-//		EMDriver.outputTransLogProbMap(initialLogProbMapDir);
-//		EMDriver.outputEmisLogProbMap(initialLogProbMapDir);
-		
-		fs.close();
-		
-		System.err.println("Trans file: " + args[2]);
-		for (StringPair stringPair : transLogProbMap.keySet()) {
-			System.err.println(stringPair + ": " + transLogProbMap.get(stringPair));
-		}
-		
-		System.err.println("\nEmis file: " + args[3]);
-		for (StringPair stringPair : emisLogProbMap.keySet()) {
-			System.err.print(stringPair + ": " + emisLogProbMap.get(stringPair));
-		}
-		
-		runIteration("WordCount iter", args[0], args[1], 5);
-		
-//		System.out.println(EMDriver.parseTransitionFile("/Users/jakeleichtling/Documents/comp_ling_workspace/test_trans_file.txt"));
-	}
-
-	private static boolean runIteration(String jobName, String inputFilePath, String outputFilePath, int iteration) {
-		JobConf conf = new JobConf(WordCount.class);
-		conf.setJobName(jobName + "-" + iteration);
-
-		conf.setMapperClass(Map.class);
-		conf.setReducerClass(Reduce.class);
-
-		conf.setInputFormat(TextInputFormat.class);
-		conf.setOutputFormat(TextOutputFormat.class);
-		
-		conf.setMapOutputKeyClass(Text.class);
-		conf.setMapOutputValueClass(EMModelParameter.class);
-		conf.setOutputKeyClass(Text.class);
-		conf.setOutputValueClass(DoubleWritable.class);
-		
-		FileInputFormat.setInputPaths(conf, new Path(inputFilePath));
-		FileOutputFormat.setOutputPath(conf, new Path(outputFilePath + "-" + iteration));
-	
-		try {
-			JobClient.runJob(conf);
-//			FileSystem fs = FileSystem.get(outPath.toUri(), conf);
-//			return isConverged(clustersOut, conf, fs);
-		} catch (IOException e) {
-			LOGGER.log(Level.WARNING, e.toString());
-//			return true;
-		}
-		
-		return true;
-	}
-
 }

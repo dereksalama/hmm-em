@@ -2,14 +2,108 @@ package edu.dartmouth.hmmem;
 
 import java.io.BufferedReader;
 import java.io.BufferedWriter;
+import java.io.DataOutput;
+import java.io.IOException;
+import java.io.InputStreamReader;
+import java.net.URI;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.Random;
+import java.util.logging.Level;
+import java.util.logging.Logger;
+
+import org.apache.hadoop.conf.Configuration;
+import org.apache.hadoop.fs.FSDataOutputStream;
+import org.apache.hadoop.fs.FileSystem;
+import org.apache.hadoop.fs.Path;
+import org.apache.hadoop.fs.s3native.NativeS3FileSystem;
+import org.apache.hadoop.io.Text;
+import org.apache.hadoop.mapred.FileInputFormat;
+import org.apache.hadoop.mapred.FileOutputFormat;
+import org.apache.hadoop.mapred.JobClient;
+import org.apache.hadoop.mapred.JobConf;
+import org.apache.hadoop.mapred.TextInputFormat;
+import org.apache.hadoop.mapred.TextOutputFormat;
+
+import edu.dartmouth.hmmem.WordCount.Reduce;
 
 public class EMDriver {
 	
+	private static final Logger LOGGER = Logger.getLogger(EMDriver.class.toString());
+	
 	public static final String EM_MODEL_PARAMS_FILE_NAME = "em_model_params.txt";
-
+	
+	/**
+	 * The main method that drives the distributed EM work flow.
+	 * 
+	 * Arguments:
+	 * 0: Job name, e.g. "distributed-hmm-em"
+	 * 1: The bucket URI, e.g. "s3n://distributed-hmm-em/" for the file system
+	 * 2: Path to input directory containing emission sequences (one per line), e.g. "s3n://distributed-hmm-em/input"
+	 * 3: Path to output directory that does not yet exist, e.g. "s3n://distributed-hmm-em/output-13"
+	 * 4: Path to transitions file (each line of format "<from_state> <to_state>", with the first from_state
+	 * 		being the symbol for the start of the emission sequence, e.g. "s3n://distributed-hmm-em/transitions.txt"
+	 * 5: Path to emissions file (each line of format "<state> <token>", e.g. "s3n://distributed-hmm-em/emissions.txt"
+	 * 6: Log convergence, i.e. difference between log alpha of EM iterations before final output is produced,
+	 * 		e.g. "0.00001"
+	 * 
+	 * The main method first parses the input transition and emissions to generate
+	 * a random seed for the model parameters. Then, the method spawns MapReduce steps
+	 * that each perform one EM iteration until the difference between the log alphas
+	 * after each iteration is less than the given convergence argument.
+	 */
+	public static void main(String args[]) throws Exception {
+		System.err.println("~~~~~~~~~~~~~EMDriver~~~~~~~~~~~~~");
+		
+		// Obtain arguments in useful forms.
+		if (args.length != 7) {
+			for (int i = 0; i < args.length; i++) {
+				System.err.println("\t" + i + ": " + args[i]);
+			}
+			throw new Exception("Exactly 7 arguments must be specified. The arguments given were:");
+		}
+				
+		String jobName = args[0];
+		
+		String bucketURIStr = args[1];
+		URI bucketURI = new URI(bucketURIStr);
+		
+		String inputDirPathStr = args[2];
+		String outputDirPathStr = args[3];
+		
+		Path transFilePath = new Path(args[4]);
+		Path emisFilePath = new Path(args[5]);
+		
+//		double logConvergence = Double.parseDouble(args[6]);
+		
+		// Create the random seed for the model parameters.
+		FileSystem fs = NativeS3FileSystem.get(bucketURI, new Configuration());
+		
+		BufferedReader transFileReader = new BufferedReader(new InputStreamReader(fs.open(transFilePath)));
+		Map<StringPair, Double> transLogProbMap = parsePairFile(transFileReader);
+		transFileReader.close();
+		
+		BufferedReader emisFileReader = new BufferedReader(new InputStreamReader(fs.open(emisFilePath)));
+		Map<StringPair, Double> emisLogProbMap = parsePairFile(emisFileReader);
+		emisFileReader.close();
+		
+		// Output the random seed to a file to begin the EM.
+		Path randomModelParamsSeedPath = new Path(outputDirPathStr + "/0/" + EM_MODEL_PARAMS_FILE_NAME);
+		FSDataOutputStream randomModelParamsOut = fs.create(randomModelParamsSeedPath, false);
+		outputEMModelParams(transLogProbMap, emisLogProbMap, randomModelParamsOut);
+		randomModelParamsOut.close();
+		
+		///
+		// Conduct the EM.
+		LOGGER.log(Level.INFO, "Running an EM iteration!");
+		runIteration(jobName, bucketURIStr, inputDirPathStr, outputDirPathStr, 1);
+		
+		// Write the final output.
+		
+		
+		fs.close();
+	}
+	
 	/**
 	 * Parses the given pair file, where each line is of the form
 	 * "<from_state> <to_state>" (for transition files) or "<state> <token>" for emission files.
@@ -134,6 +228,52 @@ public class EMDriver {
 		
 	}
 	
-//	EMDriver.outputTransLogProbMap(initialLogProbMapDir);
-//	EMDriver.outputEmisLogProbMap(initialLogProbMapDir);
+	/**
+	 * Outputs the given transition and emission log prob maps in the form of serialized EMModelParameters to the given DataOutput.
+	 */
+	public static void outputEMModelParams(Map<StringPair, Double> transLogProbMap, Map<StringPair, Double> emisLogProbMap, DataOutput out) throws IOException {
+		for (StringPair stringPair : transLogProbMap.keySet()) {
+			EMModelParameter transModelParam = new EMModelParameter(EMModelParameter.PARAMETER_TYPE_TRANSITION,
+					new Text(stringPair.x), new Text(stringPair.y), transLogProbMap.get(stringPair));
+			transModelParam.write(out);
+		}
+		
+		for (StringPair stringPair : emisLogProbMap.keySet()) {
+			EMModelParameter emisModelParam = new EMModelParameter(EMModelParameter.PARAMETER_TYPE_EMISSION,
+					new Text(stringPair.x), new Text(stringPair.y), emisLogProbMap.get(stringPair));
+			emisModelParam.write(out);
+		}
+	}
+	
+	/**
+	 * Conduct a single iteration of EM. Returns true if the algorithm has converged.
+	 */
+	private static boolean runIteration(String jobName, String bucketURIStr, String inputDirPathStr,
+			String outputDirPathStr, int iteration) throws IOException {
+		JobConf conf = new JobConf(EMDriver.class);
+		conf.setJobName(jobName + "-" + iteration);
+
+		conf.setMapperClass(ExpectationMapper.class);
+		conf.setReducerClass(Reduce.class);
+
+		conf.setInputFormat(TextInputFormat.class);
+		conf.setOutputFormat(TextOutputFormat.class);
+		
+		conf.setMapOutputKeyClass(Text.class);
+		conf.setMapOutputValueClass(EMModelParameter.class);
+		conf.setOutputKeyClass(Text.class);
+		conf.setOutputValueClass(Text.class);
+		
+		FileInputFormat.setInputPaths(conf, new Path(inputDirPathStr));
+		FileOutputFormat.setOutputPath(conf, new Path(outputDirPathStr + "/" + iteration + "/"));
+		
+		conf.set(ExpectationMapper.BUCKET_URI_KEY, bucketURIStr);
+		
+		String modelParamsDirPathStr = outputDirPathStr + "/" + (iteration-1) + "/";
+		conf.set(ExpectationMapper.MODEL_PARAMETERS_DIR_PATH_KEY, modelParamsDirPathStr);
+		
+		JobClient.runJob(conf);
+		
+		return true;
+	}
 }

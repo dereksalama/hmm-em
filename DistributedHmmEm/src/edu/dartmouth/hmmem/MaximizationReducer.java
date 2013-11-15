@@ -26,7 +26,6 @@ import org.apache.hadoop.mapred.Reporter;
  * The reducer works by taking the expected counts for transitionCounts that start on the
  * given state (i.e. the input key) or emissionCounts for the state and normalizing to
  * get new model parameters. 
- * @author dsalama
  *
  */
 public class MaximizationReducer {
