@@ -10,6 +10,13 @@ public class StringPair {
 		this.y = new String(y);
 	}
 	
+	public static StringPair stringPairFromEMModelParameter(EMModelParameter param) {
+		String x = param.getTransFromStateOrEmisState().toString();
+		String y = param.getTransToStateOrEmisToken().toString();
+		
+		return new StringPair(x, y);
+	}
+	
 	@Override
 	public boolean equals(Object o) {
 		if (!(o instanceof StringPair)) {

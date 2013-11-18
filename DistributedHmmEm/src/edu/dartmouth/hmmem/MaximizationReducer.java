@@ -1,13 +1,22 @@
 package edu.dartmouth.hmmem;
 
 import java.io.IOException;
+import java.net.URI;
+import java.net.URISyntaxException;
 import java.util.HashMap;
 import java.util.Iterator;
 import java.util.Map;
 import java.util.Map.Entry;
 
-import org.apache.hadoop.io.DoubleWritable;
+import org.apache.hadoop.conf.Configuration;
+import org.apache.hadoop.fs.FSDataOutputStream;
+import org.apache.hadoop.fs.FileSystem;
+import org.apache.hadoop.fs.Path;
+import org.apache.hadoop.fs.s3native.NativeS3FileSystem;
+import org.apache.hadoop.io.NullWritable;
 import org.apache.hadoop.io.Text;
+import org.apache.hadoop.mapred.FileOutputFormat;
+import org.apache.hadoop.mapred.JobConf;
 import org.apache.hadoop.mapred.MapReduceBase;
 import org.apache.hadoop.mapred.OutputCollector;
 import org.apache.hadoop.mapred.Reducer;
@@ -16,63 +25,122 @@ import org.apache.hadoop.mapred.Reporter;
 /**
  * Reducer to perform maximization step.
  * Input - 
- * key: state (either start of transition, or state for emission)
- * value: end state of transition or emission, expected count of event
+ * key: state (either start of transition, state for emission, or dummy state for alpha)
+ * value: EMModelParameter object representing transition, emission, or alpha dummy with log counts
  * 
  * Output -
- * key: either (start state, end state) or (state, emission)
- * value: probability
+ * key: state (either start of transition or state for emission, but no dummy state for alpha)
+ * value: EMModelParameter object
  * 
- * The reducer works by taking the expected counts for transitionCounts that start on the
- * given state (i.e. the input key) or emissionCounts for the state and normalizing to
+ * The reducer works by taking the expected log counts for transitionLogCounts that start on the
+ * given state (i.e. the input key) or emissionLogCounts for the state and normalizing (sum of probabilities == 1) to
  * get new model parameters. 
  *
+ * The reducer that receives the alphas from the mappers will multiply them together to produce
+ * total alpha and will output this to a specially named file in the output file path directory.
  */
-public class MaximizationReducer {
-//public class MaximizationReducer extends MapReduceBase implements
-//		Reducer<Text, ValueAndCount, EMModelParameter, DoubleWritable> {
-//
-//	@Override
-//	public void reduce(Text state, Iterator<ValueAndCount> expectedCounts,
-//			OutputCollector<EMModelParameter, DoubleWritable> output, Reporter reporter) 
-//					throws IOException {
-//		double totalTransitionCount = 0.0;
-//		double totalEmissionCount = 0.0;
-//		Map<String, Double> emissionCounts = new HashMap<String, Double>();
-//		Map<String, Double> transitionCounts = new HashMap<String, Double>();
-//	
-//		// Accumulate counts and add to maps
-//		while (expectedCounts.hasNext()) {
-//			ValueAndCount vac = expectedCounts.next();
-//			switch (vac.getType()){
-//			case ValueAndCount.PARAMETER_TYPE_EMISSION:
-//				totalEmissionCount += vac.getCount();
-//				emissionCounts.put(vac.getValue(), vac.getCount());
-//				break;
-//			case ValueAndCount.PARAMETER_TYPE_TRANSITION:
-//				totalTransitionCount += vac.getCount();
-//				transitionCounts.put(vac.getValue(), vac.getCount());
-//				break;
-//			}
-//		}
-//		
-//		String sourceState = state.toString();
-//		
-//		// Output param with normalized prob for each emission
-//		for (Entry<String, Double> emission : emissionCounts.entrySet()) {
-//			double probability = emission.getValue() / totalEmissionCount;
-//			EMModelParameter param = EMModelParameter.emissionParameter(sourceState, 
-//					emission.getKey());
-//			output.collect(param, new DoubleWritable(probability));
-//		}
-//		
-//		// Output param with normalized prob for each transition
-//		for (Entry<String, Double> transition : transitionCounts.entrySet()) {
-//			double probability = transition.getValue() / totalTransitionCount;
-//			EMModelParameter param = EMModelParameter.transitionParameter(sourceState, 
-//					transition.getKey());
-//			output.collect(param, new DoubleWritable(probability));
-//		}
-//	}
 
+public class MaximizationReducer extends MapReduceBase implements Reducer<Text, EMModelParameter, NullWritable, Text> {
+
+	public static final String TOTAL_LOG_ALPHA_FILE_NAME = "total_log_alpha.txt";
+	
+	private String outputPathStr;
+	private URI bucketURI;
+
+	private boolean failure = false;
+	private String failureString;
+	
+	@Override
+	public void reduce(Text key, Iterator<EMModelParameter> expectedCounts,
+			OutputCollector<NullWritable, Text> output, Reporter reporter)
+			throws IOException {
+		if (failure) {
+			throw new IOException(failureString);
+		}
+		
+		Map<StringPair, Double> transLogCounts = new HashMap<StringPair, Double>();
+		Map<StringPair, Double> emisLogCounts = new HashMap<StringPair, Double>();
+		
+		Double totalLogAlpha = null;
+		
+		// Aggregate the counts.
+		while (expectedCounts.hasNext()) {
+			EMModelParameter expectedCount = expectedCounts.next();
+			switch (expectedCount.getParameterType()) {
+			case EMModelParameter.PARAMETER_TYPE_TRANSITION:
+				transLogCounts.put(StringPair.stringPairFromEMModelParameter(expectedCount), expectedCount.getLogCount());
+				break;
+			case EMModelParameter.PARAMETER_TYPE_EMISSION:
+				emisLogCounts.put(StringPair.stringPairFromEMModelParameter(expectedCount), expectedCount.getLogCount());				
+				break;
+			case EMModelParameter.TYPE_ALPHA:
+				totalLogAlpha = StaticUtil.calcLogProductOfLogs(totalLogAlpha, expectedCount.getLogCount());
+				break;
+			}
+		}
+		
+		// Normalize the counts to get the new model probabilities.
+		StaticUtil.normalizeLogProbMap(transLogCounts);
+		StaticUtil.normalizeLogProbMap(emisLogCounts);
+		
+		// Output the new model parameters to be used by the next iteration or the final model.
+		outputTransitionLogCounts(transLogCounts, output);
+		outputEmissionLogCounts(emisLogCounts, output);
+		
+		// Output the total log alpha if appropriate.
+		if (totalLogAlpha != null) {
+			String totalLogAlphaPathStr = outputPathStr + "/" + TOTAL_LOG_ALPHA_FILE_NAME;
+			Path totalLogAlphaPath = new Path(totalLogAlphaPathStr);
+			
+			FileSystem fs = NativeS3FileSystem.get(bucketURI, new Configuration());
+			FSDataOutputStream totalLogAlphaOut = fs.create(totalLogAlphaPath, false);
+			
+			EMModelParameter totalLogAlphaObject = EMModelParameter.makeAlphaObject(totalLogAlpha);
+			totalLogAlphaObject.write(totalLogAlphaOut);
+			
+			totalLogAlphaOut.close();
+		}
+	}
+	
+	@Override
+	public void configure(JobConf job) {
+		super.configure(job);
+		
+		outputPathStr = FileOutputFormat.getOutputPath(job).toString();
+		
+		try {
+			bucketURI = new URI(job.get(ExpectationMapper.BUCKET_URI_KEY));
+		} catch (URISyntaxException e) {
+			failure = true;
+			failureString = e.toString();
+		}
+	}
+	
+	/**
+	 * Outputs the transition log counts as EMModelParameters.
+	 */
+	private static void outputTransitionLogCounts(Map<StringPair, Double> transLogCounts, OutputCollector<NullWritable, Text> output) throws IOException {
+		outputLogCounts(transLogCounts, output, EMModelParameter.PARAMETER_TYPE_TRANSITION);
+	}
+	
+	/**
+	 * Outputs the emission log counts as EMModelParameters.
+	 */
+	private static void outputEmissionLogCounts(Map<StringPair, Double> emisLogCounts, OutputCollector<NullWritable, Text> output) throws IOException {
+		outputLogCounts(emisLogCounts, output, EMModelParameter.PARAMETER_TYPE_EMISSION);
+	}
+	
+	/**
+	 * Outputs the log counts as EMModelParameters.
+	 */
+	private static void outputLogCounts(Map<StringPair, Double> logCounts, OutputCollector<NullWritable, Text> output,
+			char parameterType) throws IOException {
+		for (Entry<StringPair, Double> entry : logCounts.entrySet()) {
+			if (entry.getValue() != null) { // Only output if prob > 0.
+				EMModelParameter param = new EMModelParameter(parameterType, new Text(entry.getKey().x), new Text(entry.getKey().y),
+						entry.getValue());
+				output.collect(NullWritable.get(), new Text(param.toString()));
+			}
+		}
+	}
 }

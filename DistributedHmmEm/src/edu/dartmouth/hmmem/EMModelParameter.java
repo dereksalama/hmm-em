@@ -10,15 +10,25 @@ import org.apache.hadoop.io.Writable;
 
 /*
  * Represents a single EM model parameter, such as the probability of a transition or an emission.
+ * 
+ * Is also used to encapsulate information about alpha of an observation sequence under a given model.
  */
 public class EMModelParameter implements Writable {
 	
 	public static final char PARAMETER_TYPE_TRANSITION = 't';
 	public static final char PARAMETER_TYPE_EMISSION = 'e';
+	public static final char TYPE_ALPHA = 'a';
 	
-	// Indicates the type of the parameter:
+	private static final String TRANSITION_PREFIX = "Transition:";
+	private static final String EMISSION_PREFIX = "Emission:";
+	private static final String ALPHA_PREFIX = "Alpha:";
+	
+	public static final Text ALPHA_DUMMY_TEXT = new Text("alpha_dummy_text");
+	
+	// Indicates the type of the parameter (or alpha):
 	// 't' --> transition
 	// 'e' --> emission
+	// 'a' --> alpha
 	private char parameterType = '\0';
 	
 	private Text transFromStateOrEmisState = new Text();
@@ -33,6 +43,10 @@ public class EMModelParameter implements Writable {
 		this.transFromStateOrEmisState = transFromStateOrEmisState;
 		this.transToStateOrEmisToken = transToStateOrEmisToken;
 		this.logCount = logCount;
+	}
+	
+	public static EMModelParameter makeAlphaObject(double logCount) {
+		return new EMModelParameter(TYPE_ALPHA, ALPHA_DUMMY_TEXT, ALPHA_DUMMY_TEXT, logCount);
 	}
 	
 	@Override
@@ -55,14 +69,45 @@ public class EMModelParameter implements Writable {
 		out.writeDouble(logCount);		
 	}
 	
-	public static EMModelParameter read(DataInput in) throws IOException {
-		EMModelParameter param = new EMModelParameter();
-		try {
-			param.readFields(in);
-		} catch (EOFException e) { // read to end of file
-			return null;
+	public static EMModelParameter fromString(String str) throws Exception {
+		String trimmedString = str.trim();
+		if (trimmedString.length() == 0) {
+			return null; // No problem, we just got an empty line.
 		}
-		return param;
+		
+		String[] tokens = str.trim().split("\\s+");
+		
+		char paramType;
+		if (tokens[0].equals(TRANSITION_PREFIX)) {
+			paramType = PARAMETER_TYPE_TRANSITION;
+		} else if (tokens[0].equals(EMISSION_PREFIX)) {
+			paramType = PARAMETER_TYPE_EMISSION;
+		} else if (tokens[0].equals(ALPHA_PREFIX)) {
+			paramType = TYPE_ALPHA;
+		} else {
+			throw new Exception("Invalid format for an EMModelParameter: \"" + str + "\"");
+		}
+		
+		EMModelParameter param;
+		if (paramType == TYPE_ALPHA) {
+			double logAlpha = Double.parseDouble(tokens[1]);
+			param = makeAlphaObject(logAlpha);
+		} else {
+			Text transFromStateOrEmisState = new Text(tokens[1]);
+			Text transToStateOrEmisToken = new Text(tokens[2]);
+			double logCount = Double.parseDouble(tokens[3]);
+			
+			param = new EMModelParameter(paramType, transFromStateOrEmisState, transToStateOrEmisToken, logCount);
+		}
+//		
+//		EMModelParameter param = new EMModelParameter();
+//		try {
+//			param.readFields(in);
+//		} catch (EOFException e) { // read to end of file
+//			return null;
+//		}
+//		return param;
+		return null;
 	}
 
 	public char getParameterType() {
@@ -102,14 +147,18 @@ public class EMModelParameter implements Writable {
 		
 		switch (parameterType) {
 		case PARAMETER_TYPE_TRANSITION:
-			sb.append("Transition: ");
+			sb.append(TRANSITION_PREFIX);
+			sb.append(" " + transFromStateOrEmisState + " " + transToStateOrEmisToken + " " + logCount);
 			break;
 		case PARAMETER_TYPE_EMISSION:
-			sb.append("Emission: ");
+			sb.append(EMISSION_PREFIX);
+			sb.append(" " + transFromStateOrEmisState + " " + transToStateOrEmisToken + " " + logCount);
+			break;
+		case TYPE_ALPHA:
+			sb.append(ALPHA_PREFIX);
+			sb.append(" " + logCount);
 			break;
 		}
-		
-		sb.append(transFromStateOrEmisState + " --> " + transToStateOrEmisToken + " : " + logCount);
 		
 		return sb.toString();
 	}

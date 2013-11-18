@@ -1,7 +1,6 @@
 package edu.dartmouth.hmmem;
 
 import java.io.BufferedReader;
-import java.io.BufferedWriter;
 import java.io.DataOutput;
 import java.io.IOException;
 import java.io.InputStreamReader;
@@ -17,6 +16,7 @@ import org.apache.hadoop.fs.FSDataOutputStream;
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.fs.s3native.NativeS3FileSystem;
+import org.apache.hadoop.io.NullWritable;
 import org.apache.hadoop.io.Text;
 import org.apache.hadoop.mapred.FileInputFormat;
 import org.apache.hadoop.mapred.FileOutputFormat;
@@ -25,13 +25,13 @@ import org.apache.hadoop.mapred.JobConf;
 import org.apache.hadoop.mapred.TextInputFormat;
 import org.apache.hadoop.mapred.TextOutputFormat;
 
-import edu.dartmouth.hmmem.WordCount.Reduce;
-
 public class EMDriver {
 	
 	private static final Logger LOGGER = Logger.getLogger(EMDriver.class.toString());
 	
 	public static final String EM_MODEL_PARAMS_FILE_NAME = "em_model_params.txt";
+	
+	private static String startState = null;
 	
 	/**
 	 * The main method that drives the distributed EM work flow.
@@ -46,6 +46,7 @@ public class EMDriver {
 	 * 5: Path to emissions file (each line of format "<state> <token>", e.g. "s3n://distributed-hmm-em/emissions.txt"
 	 * 6: Log convergence, i.e. difference between log alpha of EM iterations before final output is produced,
 	 * 		e.g. "0.00001"
+	 * 7: Max number of EM iterations, or -1 for no maximum.
 	 * 
 	 * The main method first parses the input transition and emissions to generate
 	 * a random seed for the model parameters. Then, the method spawns MapReduce steps
@@ -56,11 +57,12 @@ public class EMDriver {
 		System.err.println("~~~~~~~~~~~~~EMDriver~~~~~~~~~~~~~");
 		
 		// Obtain arguments in useful forms.
-		if (args.length != 7) {
+		if (args.length != 8) {
+			System.err.println("Exactly 8 arguments must be specified. The arguments given were:");
 			for (int i = 0; i < args.length; i++) {
 				System.err.println("\t" + i + ": " + args[i]);
 			}
-			throw new Exception("Exactly 7 arguments must be specified. The arguments given were:");
+			throw new Exception("Exactly 8 arguments must be specified. " + args.length + " were passed.");
 		}
 				
 		String jobName = args[0];
@@ -74,17 +76,18 @@ public class EMDriver {
 		Path transFilePath = new Path(args[4]);
 		Path emisFilePath = new Path(args[5]);
 		
-//		double logConvergence = Double.parseDouble(args[6]);
+		double logConvergence = Double.parseDouble(args[6]);
+		int maxIterations = Integer.parseInt(args[7]);
 		
 		// Create the random seed for the model parameters.
 		FileSystem fs = NativeS3FileSystem.get(bucketURI, new Configuration());
 		
 		BufferedReader transFileReader = new BufferedReader(new InputStreamReader(fs.open(transFilePath)));
-		Map<StringPair, Double> transLogProbMap = parsePairFile(transFileReader);
+		Map<StringPair, Double> transLogProbMap = parsePairFile(transFileReader, true);
 		transFileReader.close();
 		
 		BufferedReader emisFileReader = new BufferedReader(new InputStreamReader(fs.open(emisFilePath)));
-		Map<StringPair, Double> emisLogProbMap = parsePairFile(emisFileReader);
+		Map<StringPair, Double> emisLogProbMap = parsePairFile(emisFileReader, false);
 		emisFileReader.close();
 		
 		// Output the random seed to a file to begin the EM.
@@ -93,13 +96,19 @@ public class EMDriver {
 		outputEMModelParams(transLogProbMap, emisLogProbMap, randomModelParamsOut);
 		randomModelParamsOut.close();
 		
-		///
 		// Conduct the EM.
-		LOGGER.log(Level.INFO, "Running an EM iteration!");
-		runIteration(jobName, bucketURIStr, inputDirPathStr, outputDirPathStr, 1);
+		for (int i = 1; i <= maxIterations || maxIterations < 0; i++) { // Start iteration at 1 because initial parameters are at .../0/
+			LOGGER.log(Level.INFO, "Running EM iteration " + i + "!");
+
+			runIteration(jobName, bucketURIStr, inputDirPathStr, outputDirPathStr, startState, i);
+		}
 		
-		// Write the final output.
-		
+//		// Write the final output.
+//		if (finalIteration >= 0) {
+//			String emIterationOutputPathStr = outputDirPathStr + "/" + finalIteration + "/";
+//			String humanReadableOutputPathStr = outputDirPathStr + "/human-readable/";
+//			convertIterationOutputToHumanReadableFormat(fs, emIterationOutputPathStr, humanReadableOutputPathStr);
+//		}
 		
 		fs.close();
 	}
@@ -111,8 +120,11 @@ public class EMDriver {
 	 * and normalizes such that the sum of all transitions/emissions from a given state
 	 * is 1.0. Returns a dictionary mapping the tuple to the log
 	 * of the randomized and normalized probability.
+	 * 
+	 * If isTransFile is set, indicating we are parsing a transition file, then the fromState of the
+	 * first transition is used as the start state for all emission sequences.
 	 */
-	public static Map<StringPair, Double> parsePairFile(BufferedReader fileReader) throws Exception {
+	private static Map<StringPair, Double> parsePairFile(BufferedReader fileReader, boolean isTransFile) throws Exception {
 		Random random = new Random();
 		Map<StringPair, Double> logProbMap = new HashMap<StringPair, Double>();
 		
@@ -142,41 +154,15 @@ public class EMDriver {
 			}
 			
 			logProbMap.put(stringPair, logProb);
-		}
-		
-		normalizeLogProbMap(logProbMap);
-		
-		return logProbMap;
-	}
-	
-	/**
-	 * Normalizes a log probability map such that all the probabilities
-	 * where the first string in the string pair key is some string x sum to 1.0.
-	 */
-	public static void normalizeLogProbMap(Map<StringPair, Double> logProbMap) {
-		Map<String, Double> logProbSumMap = new HashMap<String, Double>();
-		
-		// See how much we have to scale down by to normalize.
-		for (StringPair stringPair : logProbMap.keySet()) {
-			String x = stringPair.x;
 			
-			Double logProb = logProbMap.get(stringPair);
-			Double prevLogProbSum = logProbSumMap.get(x);
-					
-			Double newLogProbSum = calcLogSumOfLogs(logProb, prevLogProbSum);
-			logProbSumMap.put(x, newLogProbSum);
-		}
-		
-		// Do the normalization.
-		for (StringPair stringPair : logProbMap.keySet()) {
-			Double prevLogProb = logProbMap.get(stringPair);
-			Double logProbSum = logProbSumMap.get(stringPair.x);
-			
-			if (prevLogProb != null) {
-				Double normLogProb = prevLogProb - logProbSum;
-				logProbMap.put(stringPair, normLogProb);
+			if (isTransFile && startState == null) {
+				startState = stringPair.x;
 			}
 		}
+		
+		StaticUtil.normalizeLogProbMap(logProbMap);
+		
+		return logProbMap;
 	}
 	
 	/**
@@ -222,26 +208,19 @@ public class EMDriver {
 	}
 	
 	/**
-	 * Outputs the given transition log prob map to the given file writer.
-	 */
-	public static void outputTransLogProbMap(Map<StringPair, Double> transLogProbMap, BufferedWriter fileWriter) {
-		
-	}
-	
-	/**
 	 * Outputs the given transition and emission log prob maps in the form of serialized EMModelParameters to the given DataOutput.
 	 */
 	public static void outputEMModelParams(Map<StringPair, Double> transLogProbMap, Map<StringPair, Double> emisLogProbMap, DataOutput out) throws IOException {
 		for (StringPair stringPair : transLogProbMap.keySet()) {
 			EMModelParameter transModelParam = new EMModelParameter(EMModelParameter.PARAMETER_TYPE_TRANSITION,
 					new Text(stringPair.x), new Text(stringPair.y), transLogProbMap.get(stringPair));
-			transModelParam.write(out);
+			out.writeChars(transModelParam.toString() + "\n");
 		}
 		
 		for (StringPair stringPair : emisLogProbMap.keySet()) {
 			EMModelParameter emisModelParam = new EMModelParameter(EMModelParameter.PARAMETER_TYPE_EMISSION,
 					new Text(stringPair.x), new Text(stringPair.y), emisLogProbMap.get(stringPair));
-			emisModelParam.write(out);
+			out.writeChars(emisModelParam.toString() + "\n");
 		}
 	}
 	
@@ -249,20 +228,20 @@ public class EMDriver {
 	 * Conduct a single iteration of EM. Returns true if the algorithm has converged.
 	 */
 	private static boolean runIteration(String jobName, String bucketURIStr, String inputDirPathStr,
-			String outputDirPathStr, int iteration) throws IOException {
+			String outputDirPathStr, String startState, int iteration) throws IOException {
 		JobConf conf = new JobConf(EMDriver.class);
 		conf.setJobName(jobName + "-" + iteration);
 
 		conf.setMapperClass(ExpectationMapper.class);
-		conf.setReducerClass(Reduce.class);
+		conf.setReducerClass(MaximizationReducer.class);
 
 		conf.setInputFormat(TextInputFormat.class);
 		conf.setOutputFormat(TextOutputFormat.class);
 		
 		conf.setMapOutputKeyClass(Text.class);
 		conf.setMapOutputValueClass(EMModelParameter.class);
-		conf.setOutputKeyClass(Text.class);
-		conf.setOutputValueClass(Text.class);
+		conf.setOutputKeyClass(NullWritable.class);
+		conf.setOutputValueClass(EMModelParameter.class);
 		
 		FileInputFormat.setInputPaths(conf, new Path(inputDirPathStr));
 		FileOutputFormat.setOutputPath(conf, new Path(outputDirPathStr + "/" + iteration + "/"));
@@ -272,8 +251,60 @@ public class EMDriver {
 		String modelParamsDirPathStr = outputDirPathStr + "/" + (iteration-1) + "/";
 		conf.set(ExpectationMapper.MODEL_PARAMETERS_DIR_PATH_KEY, modelParamsDirPathStr);
 		
+		conf.set(ExpectationMapper.START_STATE_KEY, startState);
+		
 		JobClient.runJob(conf);
 		
+		// TODO: Check for convergence.
 		return true;
 	}
+	
+//	/**
+//	 * Convert the output of an EM iteration to a human readable and exportable format.
+//	 */
+//	private static void convertIterationOutputToHumanReadableFormat(FileSystem fs, String emIterationOutputPathStr, String humanReadableOutputPathStr) throws Exception {
+//		Map<StringPair, Double> transLogProbMap = new HashMap<StringPair, Double>();
+//		Map<StringPair, Double> emisLogProbMap = new HashMap<StringPair, Double>();
+//		
+//		FileStatus[] modelParameterFileStatuses;
+//		modelParameterFileStatuses = fs.listStatus(new Path(emIterationOutputPathStr));
+//
+//		for (FileStatus modelParameterFileStatus : modelParameterFileStatuses) {
+//			LOGGER.log(Level.INFO, "Parsing model parameters file: " + modelParameterFileStatus.getPath());
+//
+//			if (!modelParameterFileStatus.getPath().getName().equals(MaximizationReducer.TOTAL_LOG_ALPHA_FILE_NAME)) {
+//				DataInput modelParametersIn = fs.open(modelParameterFileStatus.getPath());
+//				StaticUtil.readModelParametersFile(modelParametersIn, transLogProbMap, emisLogProbMap);
+//			}
+//		}
+//		
+//		// Output the model parameters in human readable form.
+//		Path humanReadableTransOutputPath = new Path(humanReadableOutputPathStr + "/trans.txt");
+//		Path humanReadableEmisOutputPath = new Path(humanReadableOutputPathStr + "/emis.txt");
+//		
+//		FSDataOutputStream humanReadableTransOut = fs.create(humanReadableTransOutputPath, false);
+//		FSDataOutputStream humanReadableEmisOut = fs.create(humanReadableEmisOutputPath, false);
+//		
+//		outputHumanReadablePairProbDict(transLogProbMap, humanReadableTransOut);
+//		outputHumanReadablePairProbDict(emisLogProbMap, humanReadableEmisOut);
+//		
+//		humanReadableTransOut.close();
+//		humanReadableEmisOut.close();
+//	}
+//	
+//	/**
+//	 * Outputs trans and emis files in human readable format:
+//	 * 
+//	 * Trans -
+//	 * <from_state> <to_state> <log_prob>
+//	 * 
+//	 * Emis -
+//	 * <state> <token> <log_prob>
+//	 */
+//	private static void outputHumanReadablePairProbDict(Map<StringPair, Double> pairProbDict, FSDataOutputStream out) throws IOException {
+//		for (Entry<StringPair, Double> entry : pairProbDict.entrySet()) {
+//			String line = entry.getKey().x + " " + entry.getKey().y + " " + entry.getValue() + "\n";
+//			out.writeChars(line);
+//		}
+//	}
 }
