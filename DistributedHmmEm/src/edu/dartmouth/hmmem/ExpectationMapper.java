@@ -1,9 +1,8 @@
 package edu.dartmouth.hmmem;
 
-import java.io.DataInput;
 import java.io.IOException;
 import java.net.URI;
-import java.util.Arrays;
+import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -13,6 +12,7 @@ import java.util.logging.Level;
 import java.util.logging.Logger;
 
 import org.apache.hadoop.conf.Configuration;
+import org.apache.hadoop.fs.FSDataInputStream;
 import org.apache.hadoop.fs.FileStatus;
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.Path;
@@ -26,7 +26,7 @@ import org.apache.hadoop.mapred.OutputCollector;
 import org.apache.hadoop.mapred.Reporter;
 
 public class ExpectationMapper extends MapReduceBase implements
-Mapper<LongWritable, Text, Text, EMModelParameter> {
+		Mapper<LongWritable, Text, Text, EMModelParameter> {
 
 	private static final Logger LOGGER = Logger.getLogger(ExpectationMapper.class.toString());
 
@@ -52,34 +52,25 @@ Mapper<LongWritable, Text, Text, EMModelParameter> {
 		System.err.println("~~~~~~~~~~~~~ExpectationMapper~~~~~~~~~~~~~");
 
 		if (failure) {
-			System.err.print(failureString);
-			output.collect(new Text(failureString), new EMModelParameter(EMModelParameter.PARAMETER_TYPE_TRANSITION, new Text(failureString), new Text(failureString), 1337.2));
-			return;
-		}
-
-		// Test: Print out the contents of the maps to stderr and output collector.
-		System.err.println("Trans file:");
-		for (Entry<StringPair, Double> entry : transLogProbMap.entrySet()) {
-			System.err.println("\t" + entry.getKey() + ": " + entry.getValue());
-			
-			EMModelParameter transitionParam = new EMModelParameter(EMModelParameter.PARAMETER_TYPE_TRANSITION,
-					new Text(entry.getKey().x), new Text(entry.getKey().y), entry.getValue());
-			output.collect(new Text("Transition"), transitionParam);
-		}
-
-		System.err.println("Emis file:");
-		for (Entry<StringPair, Double> entry : emisLogProbMap.entrySet()) {
-			System.err.println("\t" + entry.getKey() + ": " + entry.getValue());
-			
-			EMModelParameter emissionParam = new EMModelParameter(EMModelParameter.PARAMETER_TYPE_EMISSION,
-					new Text(entry.getKey().x), new Text(entry.getKey().y), entry.getValue());
-			output.collect(new Text("Transition"), emissionParam);
+			throw new IOException(failureString);
 		}
 		
 		// Create the observation sequence list from the input line.
 		String observationSequenceString = value.toString();
-		List<String> observationSequence = Arrays.asList(observationSequenceString.trim().split("\\s+"));
+		String[] observationSequenceArray = observationSequenceString.trim().split("\\s+");
 		
+		List<String> observationSequence = new ArrayList<String>();
+		for (String obs : observationSequenceArray) {
+			String trimmedObs = obs.trim();
+			if (trimmedObs.length() != 0) {
+				observationSequence.add(trimmedObs);
+			}
+		}
+
+		if (observationSequence.size() == 0) {
+			return;
+		}
+
 		// Calculate the forward and backward matrices for the observation sequence.
 		Map<String, Double[]> forwardMatrix =
 				calculateForwardMatrix(observationSequence, transLogProbMap, emisLogProbMap, stateSet, startState);
@@ -91,7 +82,7 @@ Mapper<LongWritable, Text, Text, EMModelParameter> {
 				calculateLogTransitionCounts(forwardMatrix, backwardMatrix, transLogProbMap, emisLogProbMap, observationSequence, stateSet, startState);
 		Map<StringPair, Double> emisLogCounts =
 				calculateLogEmissionCounts(forwardMatrix, backwardMatrix, observationSequence, stateSet);
-		
+
 		// Output the transition and emission counts.
 		outputTransitionLogCounts(transLogCounts, output);
 		outputEmissionLogCounts(emisLogCounts, output);
@@ -100,6 +91,8 @@ Mapper<LongWritable, Text, Text, EMModelParameter> {
 		Double logAlpha = getLogAlpha(forwardMatrix);
 		if (logAlpha != null) {
 			EMModelParameter alpha = EMModelParameter.makeAlphaObject(logAlpha);
+			System.out.println("Log alpha: " + logAlpha);
+			System.out.println("Alpha object: " + alpha);
 			output.collect(EMModelParameter.ALPHA_DUMMY_TEXT, alpha);
 		}
 	}
@@ -128,7 +121,7 @@ Mapper<LongWritable, Text, Text, EMModelParameter> {
 				LOGGER.log(Level.INFO, "Parsing model parameters file: " + modelParameterFileStatus.getPath());
 
 				if (!modelParameterFileStatus.getPath().getName().equals(MaximizationReducer.TOTAL_LOG_ALPHA_FILE_NAME)) {
-					DataInput modelParametersIn = fs.open(modelParameterFileStatus.getPath());
+					FSDataInputStream modelParametersIn = fs.open(modelParameterFileStatus.getPath());
 					StaticUtil.readModelParametersFile(modelParametersIn, transLogProbMap, emisLogProbMap);
 				}
 			}
@@ -157,6 +150,7 @@ Mapper<LongWritable, Text, Text, EMModelParameter> {
 		int numObs = observationSequence.size();
 		if (numObs == 0) {
 			return null;
+			// TODO: What happens next?
 		}
 		
 		Map<String, Double[]> forwardMatrix = new HashMap<String, Double[]>();
@@ -219,6 +213,7 @@ Mapper<LongWritable, Text, Text, EMModelParameter> {
 		int numObs = observationSequence.size();
 		if (numObs == 0) {
 			return null;
+			// TODO: What happens next?
 		}
 		
 		Map<String, Double[]> backwardMatrix = new HashMap<String, Double[]>();
@@ -300,14 +295,6 @@ Mapper<LongWritable, Text, Text, EMModelParameter> {
 					Double logProbToStateGivenFromState = StaticUtil.calcLogProductOfLogs(StaticUtil.calcLogProductOfLogs(StaticUtil.calcLogProductOfLogs(forwardLogProb, transLogProb), emisLogProb), backwardLogProb);					
 					Double prevLogTransCount = logTransCounts.get(transStringPair);
 					logTransCounts.put(transStringPair, StaticUtil.calcLogSumOfLogs(prevLogTransCount, logProbToStateGivenFromState));
-					
-					System.out.println("------------------------");
-					System.out.println("i = " + i);
-					System.out.println(transStringPair);
-					System.out.println("Forward: " + Math.pow(2, forwardLogProb));
-					System.out.println("Backward: " + Math.pow(2, backwardLogProb));
-					System.out.println("New: " + Math.pow(2, logProbToStateGivenFromState));
-					System.out.println("Total: " + Math.pow(2, logTransCounts.get(transStringPair)));
 				}
 			}
 		}
@@ -377,8 +364,10 @@ Mapper<LongWritable, Text, Text, EMModelParameter> {
 			char parameterType) throws IOException {
 		for (Entry<StringPair, Double> entry : logCounts.entrySet()) {
 			if (entry.getValue() != null) { // Only output if prob > 0.
-				EMModelParameter param = new EMModelParameter(parameterType, new Text(entry.getKey().x), new Text(entry.getKey().y),
+				EMModelParameter param = new EMModelParameter(parameterType, new Text(entry.getKey().getX()), new Text(entry.getKey().getY()),
 						entry.getValue());
+				System.out.println("Log count: " + entry.getValue());
+				System.out.println("Param: " + param);
 				output.collect(param.getTransFromStateOrEmisState(), param);
 			}
 		}

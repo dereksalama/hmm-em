@@ -2,7 +2,6 @@ package edu.dartmouth.hmmem;
 
 import java.io.DataInput;
 import java.io.DataOutput;
-import java.io.EOFException;
 import java.io.IOException;
 
 import org.apache.hadoop.io.Text;
@@ -75,7 +74,7 @@ public class EMModelParameter implements Writable {
 			return null; // No problem, we just got an empty line.
 		}
 		
-		String[] tokens = str.trim().split("\\s+");
+		String[] tokens = trimmedString.split("\\s+");
 		
 		char paramType;
 		if (tokens[0].equals(TRANSITION_PREFIX)) {
@@ -85,7 +84,13 @@ public class EMModelParameter implements Writable {
 		} else if (tokens[0].equals(ALPHA_PREFIX)) {
 			paramType = TYPE_ALPHA;
 		} else {
-			throw new Exception("Invalid format for an EMModelParameter: \"" + str + "\"");
+			StringBuilder formatExceptionSB = new StringBuilder();
+			formatExceptionSB.append("Invalid format for an EMModelParameter: \"" + str + "\".");
+			for (int i = 0; i < tokens.length; i++) {
+				formatExceptionSB.append(" tokens[" + i + "]: \"" + tokens[i] + "\".");
+			}
+			
+			throw new Exception(formatExceptionSB.toString());
 		}
 		
 		EMModelParameter param;
@@ -99,15 +104,8 @@ public class EMModelParameter implements Writable {
 			
 			param = new EMModelParameter(paramType, transFromStateOrEmisState, transToStateOrEmisToken, logCount);
 		}
-//		
-//		EMModelParameter param = new EMModelParameter();
-//		try {
-//			param.readFields(in);
-//		} catch (EOFException e) { // read to end of file
-//			return null;
-//		}
-//		return param;
-		return null;
+
+		return param;
 	}
 
 	public char getParameterType() {

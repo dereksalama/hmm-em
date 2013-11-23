@@ -1,11 +1,14 @@
 package edu.dartmouth.hmmem;
 
-import java.io.DataInput;
+import java.io.BufferedReader;
+import java.io.InputStreamReader;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.Map;
 import java.util.Map.Entry;
 import java.util.Set;
+
+import org.apache.hadoop.fs.FSDataInputStream;
 
 /**
  * Static utility methods for distributed HMM EM.
@@ -24,7 +27,7 @@ public class StaticUtil {
 	 * Note: If logx (logy) is passed as null, then x (y) is interpreted as 0. If both parameters
 	 * are passed as null, then null is returned.
 	 */
-	public static Double calcLogSumOfLogs(Double logX, Double logY) {
+	public static Double calcLogSumOfLogs(Double logX, Double logY) {		
 		if (logX == null && logY == null) {
 			return null;
 		} else if (logX == null) {
@@ -41,7 +44,7 @@ public class StaticUtil {
 			return logSum;
 		}
 
-		double logZ = Math.min(logX, logY);
+		double logZ = Math.max(logX, logY) * -1.0;
 		double scaledLogX = logX + logZ;
 		double scaledLogY = logY + logZ;
 
@@ -50,6 +53,10 @@ public class StaticUtil {
 
 		double logScaledSum = Math.log(scaledX + scaledY) / Math.log(2);
 		double logSum = logScaledSum - logZ;
+		
+		if (!(Double.isNaN(logX) || Double.isNaN(logY))) {
+			System.out.println("logX = " + logX + ", logY = " + logY + ", logSum = " + logSum);
+		}
 
 		return logSum;
 	}
@@ -76,7 +83,7 @@ public class StaticUtil {
 		
 		// See how much we have to scale down by to normalize.
 		for (StringPair stringPair : logProbMap.keySet()) {
-			String x = stringPair.x;
+			String x = stringPair.getX();
 			
 			Double logProb = logProbMap.get(stringPair);
 			Double prevLogProbSum = logProbSumMap.get(x);
@@ -88,7 +95,7 @@ public class StaticUtil {
 		// Do the normalization.
 		for (StringPair stringPair : logProbMap.keySet()) {
 			Double prevLogProb = logProbMap.get(stringPair);
-			Double logProbSum = logProbSumMap.get(stringPair.x);
+			Double logProbSum = logProbSumMap.get(stringPair.getX());
 			
 			if (prevLogProb != null) {
 				Double normLogProb = prevLogProb - logProbSum;
@@ -102,7 +109,7 @@ public class StaticUtil {
 		
 		for (Entry<StringPair, Double> entry : transDict.entrySet()) {
 			// Add the to state for each transition.
-			stateSet.add(entry.getKey().y);
+			stateSet.add(entry.getKey().getY());
 		}
 		
 		return stateSet;
@@ -112,9 +119,11 @@ public class StaticUtil {
 	 * Reads the given model parameters file and fills in the transition and emission
 	 * log probabilities maps.
 	 */
-	public static void readModelParametersFile(DataInput in, Map<StringPair, Double> transLogProbMap, Map<StringPair, Double> emisLogProbMap) throws Exception {
+	public static void readModelParametersFile(FSDataInputStream in, Map<StringPair, Double> transLogProbMap, Map<StringPair, Double> emisLogProbMap) throws Exception {
+		BufferedReader reader = new BufferedReader(new InputStreamReader(in));
+		
 		String line;
-		while (null != (line = in.readLine())) {
+		while (null != (line = reader.readLine())) {
 			EMModelParameter param = EMModelParameter.fromString(line);
 
 			if (param != null) {			

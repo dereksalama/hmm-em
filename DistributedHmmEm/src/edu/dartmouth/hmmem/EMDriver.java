@@ -12,6 +12,7 @@ import java.util.logging.Level;
 import java.util.logging.Logger;
 
 import org.apache.hadoop.conf.Configuration;
+import org.apache.hadoop.fs.FSDataInputStream;
 import org.apache.hadoop.fs.FSDataOutputStream;
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.Path;
@@ -26,13 +27,13 @@ import org.apache.hadoop.mapred.TextInputFormat;
 import org.apache.hadoop.mapred.TextOutputFormat;
 
 public class EMDriver {
-	
+
 	private static final Logger LOGGER = Logger.getLogger(EMDriver.class.toString());
-	
+
 	public static final String EM_MODEL_PARAMS_FILE_NAME = "em_model_params.txt";
-	
+
 	private static String startState = null;
-	
+
 	/**
 	 * The main method that drives the distributed EM work flow.
 	 * 
@@ -55,7 +56,7 @@ public class EMDriver {
 	 */
 	public static void main(String args[]) throws Exception {
 		System.err.println("~~~~~~~~~~~~~EMDriver~~~~~~~~~~~~~");
-		
+
 		// Obtain arguments in useful forms.
 		if (args.length != 8) {
 			System.err.println("Exactly 8 arguments must be specified. The arguments given were:");
@@ -64,55 +65,74 @@ public class EMDriver {
 			}
 			throw new Exception("Exactly 8 arguments must be specified. " + args.length + " were passed.");
 		}
-				
+
 		String jobName = args[0];
-		
+
 		String bucketURIStr = args[1];
 		URI bucketURI = new URI(bucketURIStr);
-		
+
 		String inputDirPathStr = args[2];
 		String outputDirPathStr = args[3];
-		
+
 		Path transFilePath = new Path(args[4]);
 		Path emisFilePath = new Path(args[5]);
-		
-		double logConvergence = Double.parseDouble(args[6]);
+
+		double logAlphaConvergence = Double.parseDouble(args[6]);
 		int maxIterations = Integer.parseInt(args[7]);
-		
+
 		// Create the random seed for the model parameters.
 		FileSystem fs = NativeS3FileSystem.get(bucketURI, new Configuration());
-		
+
 		BufferedReader transFileReader = new BufferedReader(new InputStreamReader(fs.open(transFilePath)));
 		Map<StringPair, Double> transLogProbMap = parsePairFile(transFileReader, true);
 		transFileReader.close();
-		
+
 		BufferedReader emisFileReader = new BufferedReader(new InputStreamReader(fs.open(emisFilePath)));
 		Map<StringPair, Double> emisLogProbMap = parsePairFile(emisFileReader, false);
 		emisFileReader.close();
-		
+
 		// Output the random seed to a file to begin the EM.
 		Path randomModelParamsSeedPath = new Path(outputDirPathStr + "/0/" + EM_MODEL_PARAMS_FILE_NAME);
 		FSDataOutputStream randomModelParamsOut = fs.create(randomModelParamsSeedPath, false);
 		outputEMModelParams(transLogProbMap, emisLogProbMap, randomModelParamsOut);
 		randomModelParamsOut.close();
-		
+
 		// Conduct the EM.
+		int finalIteration = -1;
+		Double prevTotalLogAlpha = Double.NEGATIVE_INFINITY;
 		for (int i = 1; i <= maxIterations || maxIterations < 0; i++) { // Start iteration at 1 because initial parameters are at .../0/
 			LOGGER.log(Level.INFO, "Running EM iteration " + i + "!");
 
-			runIteration(jobName, bucketURIStr, inputDirPathStr, outputDirPathStr, startState, i);
+			finalIteration = i;
+			runEMIteration(jobName, bucketURIStr, inputDirPathStr, outputDirPathStr, startState, i);
+			
+			// Check for alpha convergence.
+			String alphaPathStr = outputDirPathStr + "/" + i + "/" + MaximizationReducer.TOTAL_LOG_ALPHA_FILE_NAME;
+			Path alphaPath = new Path(alphaPathStr);
+			FSDataInputStream alphaInputStream = fs.open(alphaPath);
+			BufferedReader alphaBufferedReader = new BufferedReader(new InputStreamReader(alphaInputStream)); 
+			
+			EMModelParameter totalLogAlphaObject = EMModelParameter.fromString(alphaBufferedReader.readLine());
+			Double totalLogAlpha = totalLogAlphaObject.getLogCount();
+			
+			System.err.println("Total log alpha for iteration " + i + ": " + totalLogAlpha);
+			
+			if (totalLogAlpha - prevTotalLogAlpha < logAlphaConvergence) {
+				break;
+			} else {
+				prevTotalLogAlpha = totalLogAlpha;
+			}
 		}
-		
-//		// Write the final output.
-//		if (finalIteration >= 0) {
-//			String emIterationOutputPathStr = outputDirPathStr + "/" + finalIteration + "/";
-//			String humanReadableOutputPathStr = outputDirPathStr + "/human-readable/";
-//			convertIterationOutputToHumanReadableFormat(fs, emIterationOutputPathStr, humanReadableOutputPathStr);
-//		}
-		
+
+		// Run Viterbi to tag the input corpora.
+		if (finalIteration != -1) {
+			String modelParamsDirPathStr = outputDirPathStr + "/" + finalIteration + "/";
+			runViterbi(jobName, bucketURIStr, inputDirPathStr, outputDirPathStr, startState, modelParamsDirPathStr);
+		}
+
 		fs.close();
 	}
-	
+
 	/**
 	 * Parses the given pair file, where each line is of the form
 	 * "<from_state> <to_state>" (for transition files) or "<state> <token>" for emission files.
@@ -127,22 +147,22 @@ public class EMDriver {
 	private static Map<StringPair, Double> parsePairFile(BufferedReader fileReader, boolean isTransFile) throws Exception {
 		Random random = new Random();
 		Map<StringPair, Double> logProbMap = new HashMap<StringPair, Double>();
-		
+
 		String line;
 		int i = 0;
 		while (null != (line = fileReader.readLine())) {
 			i++;
-			
+
 			// Skip blank lines.
 			if (line.length() == 0) {
 				continue;
 			}
-			
+
 			String[] tokens = line.trim().split("\\s+");
 			if (tokens.length != 2) {
 				throw new Exception("Line " + i + " does not have exactly 2 tokens.");
 			}
-			
+
 			String fromState = tokens[0];
 			String toState = tokens[1];
 
@@ -152,19 +172,19 @@ public class EMDriver {
 			if (logProbMap.containsKey(stringPair)) {
 				throw new Exception("Line " + i + " is a duplicate of another line.");
 			}
-			
+
 			logProbMap.put(stringPair, logProb);
-			
+
 			if (isTransFile && startState == null) {
-				startState = stringPair.x;
+				startState = stringPair.getX();
 			}
 		}
-		
+
 		StaticUtil.normalizeLogProbMap(logProbMap);
-		
+
 		return logProbMap;
 	}
-	
+
 	/**
 	 * Given two numbers log(x) and log(y), returns log(x+y). If both log(x) and log(y) are negative,
 	 * calculates the log of the sum in the following manner to reduce the risk of underflow:
@@ -185,49 +205,51 @@ public class EMDriver {
 		} else if (logY == null) {
 			return logX;
 		}
-		
+
 		if (logX >= 0 || logY >= 0) {
 			double x = Math.pow(2, logX);
 			double y = Math.pow(2, logY);
-			
+
 			double logSum = Math.log(x + y) / Math.log(2);
 			return logSum;
 		}
-		
+
 		double logZ = Math.min(logX, logY);
 		double scaledLogX = logX + logZ;
 		double scaledLogY = logY + logZ;
-		
+
 		double scaledX = Math.pow(2, scaledLogX);
 		double scaledY = Math.pow(2, scaledLogY);
-		
+
 		double logScaledSum = Math.log(scaledX + scaledY) / Math.log(2);
 		double logSum = logScaledSum - logZ;
-		
+
 		return logSum;
 	}
-	
+
 	/**
 	 * Outputs the given transition and emission log prob maps in the form of serialized EMModelParameters to the given DataOutput.
 	 */
 	public static void outputEMModelParams(Map<StringPair, Double> transLogProbMap, Map<StringPair, Double> emisLogProbMap, DataOutput out) throws IOException {
 		for (StringPair stringPair : transLogProbMap.keySet()) {
 			EMModelParameter transModelParam = new EMModelParameter(EMModelParameter.PARAMETER_TYPE_TRANSITION,
-					new Text(stringPair.x), new Text(stringPair.y), transLogProbMap.get(stringPair));
-			out.writeChars(transModelParam.toString() + "\n");
+					new Text(stringPair.getX()), new Text(stringPair.getY()), transLogProbMap.get(stringPair));
+			String transModelParamLineString = transModelParam.toString() + "\n";
+			out.write(transModelParamLineString.getBytes());
 		}
-		
+
 		for (StringPair stringPair : emisLogProbMap.keySet()) {
 			EMModelParameter emisModelParam = new EMModelParameter(EMModelParameter.PARAMETER_TYPE_EMISSION,
-					new Text(stringPair.x), new Text(stringPair.y), emisLogProbMap.get(stringPair));
-			out.writeChars(emisModelParam.toString() + "\n");
+					new Text(stringPair.getX()), new Text(stringPair.getY()), emisLogProbMap.get(stringPair));
+			String emisModelParamLineString = emisModelParam.toString() + "\n";
+			out.write(emisModelParamLineString.getBytes());
 		}
 	}
-	
+
 	/**
 	 * Conduct a single iteration of EM. Returns true if the algorithm has converged.
 	 */
-	private static boolean runIteration(String jobName, String bucketURIStr, String inputDirPathStr,
+	private static void runEMIteration(String jobName, String bucketURIStr, String inputDirPathStr,
 			String outputDirPathStr, String startState, int iteration) throws IOException {
 		JobConf conf = new JobConf(EMDriver.class);
 		conf.setJobName(jobName + "-" + iteration);
@@ -237,74 +259,100 @@ public class EMDriver {
 
 		conf.setInputFormat(TextInputFormat.class);
 		conf.setOutputFormat(TextOutputFormat.class);
-		
+
 		conf.setMapOutputKeyClass(Text.class);
 		conf.setMapOutputValueClass(EMModelParameter.class);
 		conf.setOutputKeyClass(NullWritable.class);
 		conf.setOutputValueClass(EMModelParameter.class);
-		
+
 		FileInputFormat.setInputPaths(conf, new Path(inputDirPathStr));
 		FileOutputFormat.setOutputPath(conf, new Path(outputDirPathStr + "/" + iteration + "/"));
-		
+
 		conf.set(ExpectationMapper.BUCKET_URI_KEY, bucketURIStr);
-		
+
 		String modelParamsDirPathStr = outputDirPathStr + "/" + (iteration-1) + "/";
 		conf.set(ExpectationMapper.MODEL_PARAMETERS_DIR_PATH_KEY, modelParamsDirPathStr);
-		
+
 		conf.set(ExpectationMapper.START_STATE_KEY, startState);
-		
+
 		JobClient.runJob(conf);
-		
-		// TODO: Check for convergence.
-		return true;
 	}
-	
-//	/**
-//	 * Convert the output of an EM iteration to a human readable and exportable format.
-//	 */
-//	private static void convertIterationOutputToHumanReadableFormat(FileSystem fs, String emIterationOutputPathStr, String humanReadableOutputPathStr) throws Exception {
-//		Map<StringPair, Double> transLogProbMap = new HashMap<StringPair, Double>();
-//		Map<StringPair, Double> emisLogProbMap = new HashMap<StringPair, Double>();
-//		
-//		FileStatus[] modelParameterFileStatuses;
-//		modelParameterFileStatuses = fs.listStatus(new Path(emIterationOutputPathStr));
-//
-//		for (FileStatus modelParameterFileStatus : modelParameterFileStatuses) {
-//			LOGGER.log(Level.INFO, "Parsing model parameters file: " + modelParameterFileStatus.getPath());
-//
-//			if (!modelParameterFileStatus.getPath().getName().equals(MaximizationReducer.TOTAL_LOG_ALPHA_FILE_NAME)) {
-//				DataInput modelParametersIn = fs.open(modelParameterFileStatus.getPath());
-//				StaticUtil.readModelParametersFile(modelParametersIn, transLogProbMap, emisLogProbMap);
-//			}
-//		}
-//		
-//		// Output the model parameters in human readable form.
-//		Path humanReadableTransOutputPath = new Path(humanReadableOutputPathStr + "/trans.txt");
-//		Path humanReadableEmisOutputPath = new Path(humanReadableOutputPathStr + "/emis.txt");
-//		
-//		FSDataOutputStream humanReadableTransOut = fs.create(humanReadableTransOutputPath, false);
-//		FSDataOutputStream humanReadableEmisOut = fs.create(humanReadableEmisOutputPath, false);
-//		
-//		outputHumanReadablePairProbDict(transLogProbMap, humanReadableTransOut);
-//		outputHumanReadablePairProbDict(emisLogProbMap, humanReadableEmisOut);
-//		
-//		humanReadableTransOut.close();
-//		humanReadableEmisOut.close();
-//	}
-//	
-//	/**
-//	 * Outputs trans and emis files in human readable format:
-//	 * 
-//	 * Trans -
-//	 * <from_state> <to_state> <log_prob>
-//	 * 
-//	 * Emis -
-//	 * <state> <token> <log_prob>
-//	 */
-//	private static void outputHumanReadablePairProbDict(Map<StringPair, Double> pairProbDict, FSDataOutputStream out) throws IOException {
-//		for (Entry<StringPair, Double> entry : pairProbDict.entrySet()) {
-//			String line = entry.getKey().x + " " + entry.getKey().y + " " + entry.getValue() + "\n";
-//			out.writeChars(line);
-//		}
-//	}
+
+	/**
+	 * Run a Viterbi tagging job.
+	 */
+	private static void runViterbi(String jobName, String bucketURIStr, String inputDirPathStr,
+			String outputDirPathStr, String startState, String modelParamsDirPathStr) throws IOException {
+		JobConf conf = new JobConf(EMDriver.class);
+		conf.setJobName(jobName + "-viterbi");
+
+		conf.setMapperClass(ViterbiMapReduce.ViterbiMapper.class);
+		conf.setReducerClass(ViterbiMapReduce.ViterbiReducer.class);
+
+		conf.setInputFormat(TextInputFormat.class);
+		conf.setOutputFormat(TextOutputFormat.class);
+
+		conf.setMapOutputKeyClass(NullWritable.class);
+		conf.setMapOutputValueClass(TaggedObservationSequence.class);
+		conf.setOutputKeyClass(NullWritable.class);
+		conf.setOutputValueClass(TaggedObservationSequence.class);
+
+		FileInputFormat.setInputPaths(conf, new Path(inputDirPathStr));
+		FileOutputFormat.setOutputPath(conf, new Path(outputDirPathStr + "/viterbi/"));
+
+		conf.set(ExpectationMapper.BUCKET_URI_KEY, bucketURIStr);
+		conf.set(ExpectationMapper.MODEL_PARAMETERS_DIR_PATH_KEY, modelParamsDirPathStr);
+		conf.set(ExpectationMapper.START_STATE_KEY, startState);
+
+		JobClient.runJob(conf);
+	}
+
+	//	/**
+	//	 * Convert the output of an EM iteration to a human readable and exportable format.
+	//	 */
+	//	private static void convertIterationOutputToHumanReadableFormat(FileSystem fs, String emIterationOutputPathStr, String humanReadableOutputPathStr) throws Exception {
+	//		Map<StringPair, Double> transLogProbMap = new HashMap<StringPair, Double>();
+	//		Map<StringPair, Double> emisLogProbMap = new HashMap<StringPair, Double>();
+	//		
+	//		FileStatus[] modelParameterFileStatuses;
+	//		modelParameterFileStatuses = fs.listStatus(new Path(emIterationOutputPathStr));
+	//
+	//		for (FileStatus modelParameterFileStatus : modelParameterFileStatuses) {
+	//			LOGGER.log(Level.INFO, "Parsing model parameters file: " + modelParameterFileStatus.getPath());
+	//
+	//			if (!modelParameterFileStatus.getPath().getName().equals(MaximizationReducer.TOTAL_LOG_ALPHA_FILE_NAME)) {
+	//				DataInput modelParametersIn = fs.open(modelParameterFileStatus.getPath());
+	//				StaticUtil.readModelParametersFile(modelParametersIn, transLogProbMap, emisLogProbMap);
+	//			}
+	//		}
+	//		
+	//		// Output the model parameters in human readable form.
+	//		Path humanReadableTransOutputPath = new Path(humanReadableOutputPathStr + "/trans.txt");
+	//		Path humanReadableEmisOutputPath = new Path(humanReadableOutputPathStr + "/emis.txt");
+	//		
+	//		FSDataOutputStream humanReadableTransOut = fs.create(humanReadableTransOutputPath, false);
+	//		FSDataOutputStream humanReadableEmisOut = fs.create(humanReadableEmisOutputPath, false);
+	//		
+	//		outputHumanReadablePairProbDict(transLogProbMap, humanReadableTransOut);
+	//		outputHumanReadablePairProbDict(emisLogProbMap, humanReadableEmisOut);
+	//		
+	//		humanReadableTransOut.close();
+	//		humanReadableEmisOut.close();
+	//	}
+	//	
+	//	/**
+	//	 * Outputs trans and emis files in human readable format:
+	//	 * 
+	//	 * Trans -
+	//	 * <from_state> <to_state> <log_prob>
+	//	 * 
+	//	 * Emis -
+	//	 * <state> <token> <log_prob>
+	//	 */
+	//	private static void outputHumanReadablePairProbDict(Map<StringPair, Double> pairProbDict, FSDataOutputStream out) throws IOException {
+	//		for (Entry<StringPair, Double> entry : pairProbDict.entrySet()) {
+	//			String line = entry.getKey().x + " " + entry.getKey().y + " " + entry.getValue() + "\n";
+	//			out.writeChars(line);
+	//		}
+	//	}
 }

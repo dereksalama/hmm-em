@@ -40,7 +40,7 @@ import org.apache.hadoop.mapred.Reporter;
  * total alpha and will output this to a specially named file in the output file path directory.
  */
 
-public class MaximizationReducer extends MapReduceBase implements Reducer<Text, EMModelParameter, NullWritable, Text> {
+public class MaximizationReducer extends MapReduceBase implements Reducer<Text, EMModelParameter, NullWritable, EMModelParameter> {
 
 	public static final String TOTAL_LOG_ALPHA_FILE_NAME = "total_log_alpha.txt";
 	
@@ -52,7 +52,7 @@ public class MaximizationReducer extends MapReduceBase implements Reducer<Text, 
 	
 	@Override
 	public void reduce(Text key, Iterator<EMModelParameter> expectedCounts,
-			OutputCollector<NullWritable, Text> output, Reporter reporter)
+			OutputCollector<NullWritable, EMModelParameter> output, Reporter reporter)
 			throws IOException {
 		if (failure) {
 			throw new IOException(failureString);
@@ -61,7 +61,8 @@ public class MaximizationReducer extends MapReduceBase implements Reducer<Text, 
 		Map<StringPair, Double> transLogCounts = new HashMap<StringPair, Double>();
 		Map<StringPair, Double> emisLogCounts = new HashMap<StringPair, Double>();
 		
-		Double totalLogAlpha = null;
+		Double totalLogAlpha = 0.0;
+		boolean alphaOutput = false;
 		
 		// Aggregate the counts.
 		while (expectedCounts.hasNext()) {
@@ -75,6 +76,7 @@ public class MaximizationReducer extends MapReduceBase implements Reducer<Text, 
 				break;
 			case EMModelParameter.TYPE_ALPHA:
 				totalLogAlpha = StaticUtil.calcLogProductOfLogs(totalLogAlpha, expectedCount.getLogCount());
+				alphaOutput = true;
 				break;
 			}
 		}
@@ -88,7 +90,7 @@ public class MaximizationReducer extends MapReduceBase implements Reducer<Text, 
 		outputEmissionLogCounts(emisLogCounts, output);
 		
 		// Output the total log alpha if appropriate.
-		if (totalLogAlpha != null) {
+		if (alphaOutput) {
 			String totalLogAlphaPathStr = outputPathStr + "/" + TOTAL_LOG_ALPHA_FILE_NAME;
 			Path totalLogAlphaPath = new Path(totalLogAlphaPathStr);
 			
@@ -96,7 +98,7 @@ public class MaximizationReducer extends MapReduceBase implements Reducer<Text, 
 			FSDataOutputStream totalLogAlphaOut = fs.create(totalLogAlphaPath, false);
 			
 			EMModelParameter totalLogAlphaObject = EMModelParameter.makeAlphaObject(totalLogAlpha);
-			totalLogAlphaObject.write(totalLogAlphaOut);
+			totalLogAlphaOut.write(totalLogAlphaObject.toString().getBytes());
 			
 			totalLogAlphaOut.close();
 		}
@@ -119,27 +121,29 @@ public class MaximizationReducer extends MapReduceBase implements Reducer<Text, 
 	/**
 	 * Outputs the transition log counts as EMModelParameters.
 	 */
-	private static void outputTransitionLogCounts(Map<StringPair, Double> transLogCounts, OutputCollector<NullWritable, Text> output) throws IOException {
+	private static void outputTransitionLogCounts(Map<StringPair, Double> transLogCounts, OutputCollector<NullWritable, EMModelParameter> output) throws IOException {
 		outputLogCounts(transLogCounts, output, EMModelParameter.PARAMETER_TYPE_TRANSITION);
 	}
 	
 	/**
 	 * Outputs the emission log counts as EMModelParameters.
 	 */
-	private static void outputEmissionLogCounts(Map<StringPair, Double> emisLogCounts, OutputCollector<NullWritable, Text> output) throws IOException {
+	private static void outputEmissionLogCounts(Map<StringPair, Double> emisLogCounts, OutputCollector<NullWritable, EMModelParameter> output) throws IOException {
 		outputLogCounts(emisLogCounts, output, EMModelParameter.PARAMETER_TYPE_EMISSION);
 	}
 	
 	/**
 	 * Outputs the log counts as EMModelParameters.
 	 */
-	private static void outputLogCounts(Map<StringPair, Double> logCounts, OutputCollector<NullWritable, Text> output,
+	private static void outputLogCounts(Map<StringPair, Double> logCounts, OutputCollector<NullWritable, EMModelParameter> output,
 			char parameterType) throws IOException {
 		for (Entry<StringPair, Double> entry : logCounts.entrySet()) {
 			if (entry.getValue() != null) { // Only output if prob > 0.
-				EMModelParameter param = new EMModelParameter(parameterType, new Text(entry.getKey().x), new Text(entry.getKey().y),
+				EMModelParameter param = new EMModelParameter(parameterType, new Text(entry.getKey().getX()), new Text(entry.getKey().getY()),
 						entry.getValue());
-				output.collect(NullWritable.get(), new Text(param.toString()));
+				System.out.println("Log count: " + entry.getValue());
+				System.out.println("Param: " + param);
+				output.collect(NullWritable.get(), param);
 			}
 		}
 	}
