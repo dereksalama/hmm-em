@@ -63,7 +63,7 @@ public class StringPair implements Writable {
     
     @Override
     public String toString() {
-    	return "( " + x + ", " + y + " )";
+    	return "(" + x + "," + y + ")";
     }
 
 	@Override

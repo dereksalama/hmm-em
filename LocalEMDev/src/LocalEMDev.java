@@ -1,5 +1,6 @@
 import java.io.BufferedReader;
 import java.io.FileReader;
+import java.io.PrintWriter;
 import java.text.DecimalFormat;
 import java.util.Arrays;
 import java.util.HashMap;
@@ -20,6 +21,11 @@ public class LocalEMDev {
 	public static final int MAX_ITERATIONS = 10;
 
 	public static void main(String args[]) throws Exception {
+		String emisFile = args[0];
+		String transFile = args[1];
+		String corpusFile = args[2];
+		String outputFile = args[3];
+		
 		///////////////////////////
 		// Testing normalization //
 		
@@ -33,7 +39,7 @@ public class LocalEMDev {
 		
 		///////////////////////////
 		
-		BufferedReader transFileReader = new BufferedReader(new FileReader("/Users/jakeleichtling/Desktop/ptb/trans-small.txt"));
+		BufferedReader transFileReader = new BufferedReader(new FileReader(emisFile));
 		Map<StringPair, Double> transLogProbDict = parsePairFile(transFileReader);
 
 		//		transLogProbDict.put(new StringPair("#", "P"), Math.log(0.5) / Math.log(2));
@@ -50,7 +56,7 @@ public class LocalEMDev {
 		//		transLogProbDict.put(new StringPair("V", "V"), Math.log(0.1) / Math.log(2));
 		//		transLogProbDict.put(new StringPair("V", "C"), Math.log(0.9) / Math.log(2));
 
-		BufferedReader emisFileReader = new BufferedReader(new FileReader("/Users/jakeleichtling/Desktop/ptb/emis-small.txt"));
+		BufferedReader emisFileReader = new BufferedReader(new FileReader(transFile));
 		Map<StringPair, Double> emisLogProbDict = parsePairFile(emisFileReader);
 
 		//		emisLogProbDict.put(new StringPair("P", "S"), Math.log(0.2) / Math.log(2));
@@ -78,24 +84,28 @@ public class LocalEMDev {
 
 		String startState = "#";
 
-		BufferedReader corpusReader = new BufferedReader(new FileReader("/Users/jakeleichtling/Desktop/ptb/combined-small.txt"));
+		BufferedReader corpusReader = new BufferedReader(new FileReader(corpusFile));
 		List<String> lines = new LinkedList<String>();
 		for (int lineNumber = 0; lineNumber < 3; lineNumber++) {
 			lines.add(corpusReader.readLine());
 		}
 		corpusReader.close();
+		
+		List<List<String>> obsSequences = new LinkedList<List<String>>();
+		for (String line : lines) {
+			if (line.isEmpty()) {
+				continue;
+			}
+			List<String> obsSequence = Arrays.asList(line.trim().split("\\s+"));
+			obsSequences.add(obsSequence);
+		}
 
 		for (int i = 0; i < MAX_ITERATIONS; i++) {
 			Map<StringPair, Double> nextTransLogDict = new HashMap<StringPair, Double>();
 			Map<StringPair, Double> nextEmisLogDict = new HashMap<StringPair, Double>();	
 			Double totalLogAlpha = 0.0;
 			
-			for (String line : lines) {
-				if (line.isEmpty()) {
-					continue;
-				}
-//				System.out.println("Line: " + line);
-				List<String> obsSequence = Arrays.asList(line.trim().split("\\s+"));
+			for (List<String> obsSequence : obsSequences) {
 
 				// System.out.println("Viterbi tagging:");
 				// System.out.println(calculateViterbiTagging(firstLineObsSequence, transLogProbDict, emisLogProbDict, stateSet, startState));		
@@ -111,13 +121,13 @@ public class LocalEMDev {
 //				System.out.println("\nLog alpha:");
 //				System.out.println(getLogAlpha(firstLineForwardMatrix));
 				Double logAlpha = getLogAlpha(forwardMatrix);
-//				System.out.println("Line:");
-//				System.out.println(line);
-//				System.out.println("Log alpha:");
-//				System.out.println(logAlpha);
-//				if (logAlpha == null) {
-//					System.err.println("NULL LOG ALPHA!");
-//				}
+				System.out.println("Line:");
+				System.out.println(obsSequence.toString());
+				System.out.println("Log alpha:");
+				System.out.println(logAlpha);
+				if (logAlpha == null) {
+					System.err.println("NULL LOG ALPHA!");
+				}
 				totalLogAlpha = calcLogProductOfLogs(totalLogAlpha, logAlpha);
 				
 				Map<StringPair, Double> logTransCounts = calculateLogTransitionCounts(forwardMatrix, backwardMatrix, logAlpha, transLogProbDict, emisLogProbDict, obsSequence, stateSet, startState);
@@ -140,6 +150,8 @@ public class LocalEMDev {
 			emisLogProbDict = nextEmisLogDict;
 			
 			System.out.println("Total log alpha at iteration " + i + ": " + totalLogAlpha);
+			
+
 		}
 		
 //		System.out.println("Trans log prob dict: ");
@@ -157,6 +169,16 @@ public class LocalEMDev {
 		for (Entry<String, Double> entry : logProbSumMap.entrySet()) {
 			System.out.println(entry);
 		}
+		
+		PrintWriter writer = new PrintWriter(outputFile, "UTF-8");
+		
+		for (List<String> obsSequence : obsSequences) {
+			TaggedObservationSequence tagging = calculateViterbiTagging(obsSequence, transLogProbDict, emisLogProbDict, 
+				stateSet, "#");
+			writer.println(tagging.toString());
+		}
+		
+		writer.close();
 	}
 
 	/**
